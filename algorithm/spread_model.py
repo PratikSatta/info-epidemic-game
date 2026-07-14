@@ -11,6 +11,21 @@ class SpreadAlgorithm(ABC):
 
 
 class SIRSpreadModel(SpreadAlgorithm):
+    def __init__(self):
+        # Carries the fractional remainder of computed exposure per region
+        # across ticks, keyed by region identity. Without this, int()
+        # truncation silently discards any tick where susceptible * rate
+        # computes to e.g. 0.97 new believers -- at low seed counts (a
+        # handful of believers in a region of thousands) BOTH the internal
+        # and cross-edge terms regularly compute to fractions just under 1.0,
+        # which without carry-over means the simulation can stall at exactly
+        # the seed amount forever, with transmission_rate climbing every
+        # tick but believing never moving. The remainder is preserved here
+        # and added back in on the next tick so genuine sub-1 growth
+        # eventually accumulates into a real new believer instead of being
+        # discarded every single tick.
+        self._exposure_carry: dict = {}
+
     def tick(self, world: WorldGraph, strain: InfoStrain, counter: CounterMeasure) -> None:
         """
         Advance the simulation by one tick. Two passes are used:
@@ -27,21 +42,26 @@ class SIRSpreadModel(SpreadAlgorithm):
             # --- New believers from within-region spread ---
             if region.believing > 0 and region.susceptible > 0:
                 internal_exposure_rate = strain.believability_rate * (region.believing / region.population)
-                new_from_internal = int(region.susceptible * internal_exposure_rate)
+                new_from_internal = region.susceptible * internal_exposure_rate
             else:
-                new_from_internal = 0
+                new_from_internal = 0.0
 
             # --- New believers from neighboring regions (cross-edge spread) ---
-            new_from_neighbors = 0
+            new_from_neighbors = 0.0
             for neighbor, weight in region.connections.items():
                 if neighbor.believing == 0:
                     continue
                 effective_weight = min(1.0, weight + strain.edge_weight_bonus)
                 spread_chance = strain.transmission_rate * effective_weight
                 neighbor_pressure = neighbor.believing / neighbor.population
-                new_from_neighbors += int(region.susceptible * spread_chance * neighbor_pressure)
+                new_from_neighbors += region.susceptible * spread_chance * neighbor_pressure
 
-            total_new = min(region.susceptible, new_from_internal + new_from_neighbors)
+            # Add in any fractional remainder carried over from previous
+            # ticks before truncating, so sub-1 growth accumulates instead
+            # of being discarded every tick.
+            raw_total = new_from_internal + new_from_neighbors + self._exposure_carry.get(region, 0.0)
+            total_new = min(region.susceptible, int(raw_total))
+            self._exposure_carry[region] = raw_total - total_new
             exposure_deltas[region] = total_new
 
             # --- Corrections from countermeasure ---
@@ -89,6 +109,14 @@ class SEIRSpreadModel(SpreadAlgorithm):
     Exposed stage rather than instantly converting on contact.
     """
 
+    def __init__(self):
+        # See SIRSpreadModel.__init__ for the rationale: int() truncation on
+        # sub-1 per-tick growth can silently stall the simulation forever at
+        # low seed counts. Two separate carries are needed here since S->E
+        # and E->B are two independent fractional accumulations.
+        self._exposed_carry: dict = {}
+        self._believing_carry: dict = {}
+
     def tick(self, world: WorldGraph, strain: InfoStrain, counter: CounterMeasure) -> None:
         counter.tick_growth()
         new_exposed_deltas: dict = {}
@@ -102,27 +130,32 @@ class SEIRSpreadModel(SpreadAlgorithm):
             # structural difference at this stage.
             if region.believing > 0 and region.susceptible > 0:
                 internal_exposure_rate = strain.believability_rate * (region.believing / region.population)
-                new_from_internal = int(region.susceptible * internal_exposure_rate)
+                new_from_internal = region.susceptible * internal_exposure_rate
             else:
-                new_from_internal = 0
+                new_from_internal = 0.0
 
-            new_from_neighbors = 0
+            new_from_neighbors = 0.0
             for neighbor, weight in region.connections.items():
                 if neighbor.believing == 0:
                     continue
                 effective_weight = min(1.0, weight + strain.edge_weight_bonus)
                 spread_chance = strain.transmission_rate * effective_weight
                 neighbor_pressure = neighbor.believing / neighbor.population
-                new_from_neighbors += int(region.susceptible * spread_chance * neighbor_pressure)
+                new_from_neighbors += region.susceptible * spread_chance * neighbor_pressure
 
-            total_new_exposed = min(region.susceptible, new_from_internal + new_from_neighbors)
+            raw_exposed = new_from_internal + new_from_neighbors + self._exposed_carry.get(region, 0.0)
+            total_new_exposed = min(region.susceptible, int(raw_exposed))
+            self._exposed_carry[region] = raw_exposed - total_new_exposed
             new_exposed_deltas[region] = total_new_exposed
 
             # --- Exposed -> Believing ---
             # Of the people already sitting in the Exposed compartment (from
             # previous ticks), some fraction become convinced this tick.
             if region.exposed > 0:
-                new_believing_deltas[region] = int(region.exposed * strain.incubation_rate)
+                raw_believing = region.exposed * strain.incubation_rate + self._believing_carry.get(region, 0.0)
+                new_believing = min(region.exposed, int(raw_believing))
+                self._believing_carry[region] = raw_believing - new_believing
+                new_believing_deltas[region] = new_believing
             else:
                 new_believing_deltas[region] = 0
 
