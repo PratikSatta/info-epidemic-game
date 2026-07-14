@@ -62,7 +62,8 @@ class MapView:
         else:
             pygame.draw.circle(surface, color, pos, radius, width=width)
 
-    def draw(self, surface: pygame.Surface, world: WorldGraph, focus_region: Region | None = None) -> None:
+    def draw(self, surface: pygame.Surface, world: WorldGraph, focus_region: Region | None = None,
+              selected_region: Region | None = None, hovered_region: Region | None = None) -> None:
         # Panel background for the map area
         pygame.draw.rect(surface, theme.PANEL_BG, self.rect, border_radius=10)
         pygame.draw.rect(surface, theme.PANEL_BORDER, self.rect, width=2, border_radius=10)
@@ -106,6 +107,13 @@ class MapView:
             # Highlight ring if this is the AI's current focus
             if region is focus_region:
                 self._draw_overlay_ring(surface, region, pos, radius + 8, theme.TEXT_WARNING, 2)
+
+            # Selected (clicked) outline takes priority over hover, since a
+            # click is a stronger signal of intent than a passing mouse-over.
+            if region is selected_region:
+                self._draw_overlay_ring(surface, region, pos, radius + 11, theme.REGION_SELECTED_OUTLINE, 3)
+            elif region is hovered_region:
+                self._draw_overlay_ring(surface, region, pos, radius + 11, theme.REGION_HOVER_OUTLINE, 2)
 
             label = self.small_font.render(region.name, True, theme.TEXT_PRIMARY)
             surface.blit(label, (pos[0] - label.get_width() // 2, pos[1] + radius + 6))

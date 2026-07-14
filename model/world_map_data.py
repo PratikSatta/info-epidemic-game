@@ -22,15 +22,16 @@ COUNTRY_DATA = {
 # rather than true geographic projection -- readability over cartographic
 # accuracy, consistent with how Plague Inc's own map is stylized rather than
 # a precise map projection. Coordinates are scaled to fit comfortably within
-# the default 680x560 map panel (leaving margin for node radius up to ~34px
-# and below-node name labels).
+# the 800x612 map panel (leaving margin for node radius up to ~38px and
+# below-node name labels, and a dedicated right-hand column for the 4
+# platform nodes so their longer labels never overlap country nodes).
 _COUNTRY_COORDS = {
-    "United States": (110, 160), "Mexico": (90, 250), "Brazil": (160, 380), "Argentina": (150, 470),
-    "United Kingdom": (260, 90), "Germany": (300, 110), "Russia": (420, 80),
-    "Nigeria": (260, 330), "Egypt": (330, 270), "South Africa": (300, 460),
-    "Saudi Arabia": (390, 230),
-    "China": (480, 170), "India": (400, 280), "Nepal": (450, 250), "Japan": (560, 150),
-    "Australia": (520, 460),
+    "United States": (110, 130), "Mexico": (95, 230), "Brazil": (170, 380), "Argentina": (150, 480),
+    "United Kingdom": (250, 60), "Germany": (330, 110), "Russia": (440, 60),
+    "Nigeria": (260, 330), "Egypt": (370, 250), "South Africa": (300, 450),
+    "Saudi Arabia": (440, 190),
+    "China": (480, 130), "India": (380, 330), "Nepal": (470, 290), "Japan": (560, 90),
+    "Australia": (500, 460),
 }
 
 # Real-ish adjacency / strong-tie pairs (shared borders, major migration or
@@ -57,11 +58,15 @@ PLATFORM_DATA = [
     ("Close Group Chats", "close_group", 1800),
 ]
 
+# Dedicated right-hand column, well clear of the densest country cluster
+# (China/India/Nepal/Saudi Arabia sit around x=400-470) and with enough
+# vertical spacing (130px) that each square's label has room below it
+# before the next square begins.
 _PLATFORM_COORDS = {
-    "Public Social Media": (590, 270),
-    "Short-Video Platforms": (590, 340),
-    "Encrypted Messaging": (590, 410),
-    "Close Group Chats": (590, 480),
+    "Public Social Media": (680, 110),
+    "Short-Video Platforms": (680, 240),
+    "Encrypted Messaging": (680, 370),
+    "Close Group Chats": (680, 500),
 }
 
 
