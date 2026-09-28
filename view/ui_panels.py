@@ -23,7 +23,11 @@ class TraitButton:
         self.rect = rect
         self.trait = trait
         self.hovered = False
-        self.enabled = True
+        # False until update_state() has confirmed this card is affordable.
+        # update_state runs during draw, so a click arriving on a frame before
+        # the first paint after a layout rebuild would otherwise see the old
+        # default of True and read as a purchase.
+        self.enabled = False
         self.level = 0
         self.next_cost = trait.cost
 
@@ -179,6 +183,7 @@ class TraitPanel(ScrollablePanel):
 
     def draw(self, surface: pygame.Surface, strain) -> None:
         mouse_pos = pygame.mouse.get_pos()
+        content_rect = self.get_content_rect()
 
         # Draw panel background
         pygame.draw.rect(surface, theme.PANEL_BG, self.rect, border_radius=12)
@@ -195,26 +200,37 @@ class TraitPanel(ScrollablePanel):
         pygame.draw.rect(surface, theme.ACCENT, pts_rect, width=1, border_radius=6)
         surface.blit(pts_surf, (pts_rect.x + 7, pts_rect.y + 3))
 
-        # Render Trait Buttons with scroll offset
-        for button in self.buttons:
-            current_lvl = strain.trait_level(button.trait)
-
-            # Adjust mouse position for scroll when checking hover
+        # Hover only counts inside the scrollable area. Without this, pointing at
+        # the fixed header highlights whichever card is scrolled underneath it.
+        if content_rect.collidepoint(mouse_pos):
             adjusted_mouse = (mouse_pos[0], mouse_pos[1] + self.scroll_offset)
-            button.update_state(current_lvl, strain.points_available, adjusted_mouse)
+        else:
+            adjusted_mouse = (-1, -1)
 
-            # Draw button with scroll offset applied
-            scrolled_rect = button.rect.copy()
-            scrolled_rect.y -= self.scroll_offset
+        # Clip to the content area so a partially-scrolled card is cut off at
+        # the header edge instead of painting over it and out of the panel.
+        previous_clip = surface.get_clip()
+        surface.set_clip(content_rect)
+        try:
+            for button in self.buttons:
+                current_lvl = strain.trait_level(button.trait)
+                button.update_state(current_lvl, strain.points_available, adjusted_mouse)
 
-            # Only draw if visible in content area
-            content_rect = self.get_content_rect()
-            if scrolled_rect.bottom > content_rect.top and scrolled_rect.top < content_rect.bottom:
+                # Draw button with scroll offset applied
+                scrolled_rect = button.rect.copy()
+                scrolled_rect.y -= self.scroll_offset
+
+                # Skip anything scrolled entirely out of view
+                if scrolled_rect.bottom <= content_rect.top or scrolled_rect.top >= content_rect.bottom:
+                    continue
+
                 # Temporarily modify button rect for drawing
                 original_rect = button.rect
                 button.rect = scrolled_rect
                 button.draw(surface, self.font, self.font)
                 button.rect = original_rect
+        finally:
+            surface.set_clip(previous_clip)
 
         # Draw scroll indicator if scrollable
         if self.max_scroll > 0:
@@ -222,6 +238,13 @@ class TraitPanel(ScrollablePanel):
             surface.blit(indicator, (self.rect.right - 24, self.rect.y + 14))
 
     def handle_click(self, point: tuple[int, int]) -> Trait | None:
+        # Button rects are stored in CONTENT space (unscrolled), so a screen
+        # point anywhere in the window can coincidentally map onto one. Clicking
+        # this panel's own header, or the news feed below it, used to buy
+        # whichever trait happened to land there. Bound the hit test to the
+        # panel's scrollable area first.
+        if not self.get_content_rect().collidepoint(point):
+            return None
         adjusted_point = self.adjust_point_for_scroll(point)
         for button in self.buttons:
             if button.is_clicked(adjusted_point):

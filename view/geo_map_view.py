@@ -63,12 +63,41 @@ class GeoMapView:
         self._drag_start: tuple[int, int] = (0, 0)
         self._pan_start: tuple[float, float] = (0.0, 0.0)
 
-        # On-screen navigation buttons
-        btn_y = self.rect.y + 14
-        self.btn_zoom_in = pygame.Rect(self.rect.x + 16, btn_y, 28, 28)
-        self.btn_zoom_out = pygame.Rect(self.rect.x + 48, btn_y, 28, 28)
-        self.btn_reset = pygame.Rect(self.rect.x + 80, btn_y, 28, 28)
+        # On-screen navigation buttons. Positioned by _layout_nav_buttons(),
+        # which the rect setter calls -- see the property below.
+        self._layout_nav_buttons()
         self._last_mouse_pos = (0, 0)
+
+    # ── Layout ─────────────────────────────────────────────────────────────
+
+    @property
+    def rect(self) -> pygame.Rect:
+        return self._rect
+
+    @rect.setter
+    def rect(self, value: pygame.Rect) -> None:
+        """
+        Reposition the view.
+
+        main.py moves the map by assigning a new rect on every layout pass
+        (startup, window resize, fullscreen toggle). The zoom buttons are
+        positioned relative to that rect, so they must be recomputed here.
+
+        They used to be built once in __init__, from the 100x100 placeholder
+        rect the view is constructed with and which _rebuild_layout() is the
+        only thing to correct. The result was zoom controls drawn over the race
+        bar at the top-left of the window, while their clickable areas sat at
+        that same wrong place -- invisible in the map where the player would
+        look for them, but still live.
+        """
+        self._rect = value
+        self._layout_nav_buttons()
+
+    def _layout_nav_buttons(self) -> None:
+        btn_y = self._rect.y + 14
+        self.btn_zoom_in = pygame.Rect(self._rect.x + 16, btn_y, 28, 28)
+        self.btn_zoom_out = pygame.Rect(self._rect.x + 48, btn_y, 28, 28)
+        self.btn_reset = pygame.Rect(self._rect.x + 80, btn_y, 28, 28)
 
     # ── Projection helpers ──────────────────────────────────────────────────
 

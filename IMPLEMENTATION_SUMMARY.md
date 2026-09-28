@@ -227,6 +227,13 @@ What has actually been verified, by executing the program:
 - Telemetry keys and the CSV header match the documented schema
 - `report_exports/` receives a correct CSV and JSON; peak and final statistics
   cross-check against the CSV
+- The right-hand column fits inside the window at 1440×900, 1024×768, 1000×600,
+  1920×1080, 800×500 and 640×480, with no panel overlapping another and the
+  advance button on screen and clickable at every one of those sizes
+- Panel clicks land only inside the panel they belong to; clicks on a panel
+  header no longer reach the cards of the panel above it
+- Scrolled cards are clipped at the header edge (checked by sampling pixels)
+- The analytics overlay cannot consume a click while it is not drawn
 
 ---
 
@@ -248,12 +255,12 @@ were addressed in the audit-fix pass and are recorded here only for the record.
 | Export | PNG figures are never generated — `generate_matplotlib_figures()` is defined but called from nowhere | open |
 | Export | Filenames use second granularity, so pressing `E` twice within one second silently overwrites the first dataset | open |
 | Custom data | The CSV path is unreachable — `data/regions_example.csv` and `data/strain_config_example.csv` do not exist and were never committed | open |
-| UI layout | The Advance Simulation button renders off the bottom of the window at the default 1440×900, and is entirely invisible at 1024×768 fullscreen | open |
-| UI input | Panel click handlers are not bounded by their panel rectangle — clicking a panel header can trigger an ability or buy a trait | open |
-| UI state | A window resize or fullscreen toggle rebuilds every panel, clearing the news ticker and closing the analytics modal | open |
-| UI state | The analytics modal's `visible` flag is not reset between games, so after Play Again an invisible overlay swallows clicks across most of the screen | open |
-| UI input | Map zoom buttons are computed from a placeholder rect, so they are clipped out of sight while their hitboxes remain live | open |
-| UI layout | Scrollable panels do not clip their content — cards scrolled past the top paint over the fixed header | open |
+| UI layout | The Advance Simulation button rendered off the bottom of the window at the default 1440×900, and was entirely invisible at 1024×768 fullscreen — mouse-advancing turns was impossible | **fixed** |
+| UI input | Panel click handlers were not bounded by their panel rectangle — clicking the trait panel's header fired Sensationalist Blitz, and clicking the news feed's header bought a trait | **fixed** |
+| UI state | A window resize or fullscreen toggle rebuilt every panel, clearing the news ticker and closing the analytics modal | **fixed** |
+| UI state | The analytics modal's `visible` flag was not reset between games, so after Play Again an invisible overlay swallowed clicks across most of the screen | **fixed** |
+| UI input | Map zoom buttons were computed once from a placeholder rect, so they were drawn over the race bar while their hitboxes stayed live at the wrong coordinates | **fixed** |
+| UI layout | Scrollable panels did not clip their content — cards scrolled past the top painted over the fixed header | **fixed** |
 | World map | Country populations are schematic (~250–500k each), so geography carries little population signal; platform nodes are 0.011% of the total and their mechanic is invisible | open |
 | World map | The RSF transmission modifier is clamped to a ceiling of 1.0, so per-country penalties survive but boosts are unrepresentable | open |
 | World map | For 55 of 202 countries the centroid falls outside the country's own outline, so its label and strike effects draw in the wrong place | open |

@@ -72,7 +72,15 @@ class AnalyticsModal:
         return self.rect.collidepoint(pos)  # Consume clicks inside modal
 
     def draw(self, surface: pygame.Surface, telemetry_history: list[dict]) -> None:
-        if not self.visible or not telemetry_history:
+        if not self.visible:
+            return
+        if not telemetry_history:
+            # Visible but with nothing to plot (a fresh game, or a game that was
+            # just reset). Drop the flag rather than leaving an invisible
+            # overlay that still swallows clicks -- handle_click gates on
+            # self.visible, so the two must agree on whether the modal is
+            # actually on screen.
+            self.visible = False
             return
 
         # Semi-transparent backdrop overlay

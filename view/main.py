@@ -154,38 +154,64 @@ class App:
         map_rect = pygame.Rect(margin, map_top, left_w, map_h)
         strike_rect = pygame.Rect(margin, map_rect.bottom + margin, left_w, strike_h)
 
-        # Right panel heights - GENEROUS SIZING
+        # ---- Right-hand column ----
+        # The advance button is the primary player action, so its space is
+        # reserved FIRST and the five panels above it share what remains.
+        #
+        # The previous version sized each panel with an independent
+        # `max(floor, percent)` and then handed the advance button whatever was
+        # left over. At 1440x900 that left only 59px, the `max(80, ...)` bumped
+        # the button to its floor, and its bottom edge landed at y=904 -- past
+        # the bottom of a 900px window. At 1024x768 it was entirely off-screen,
+        # making mouse-advancing turns impossible.
         right_x = left_w + margin * 2
+        gap = margin
+        advance_h = 80
+        map_h = max(1, map_h)
+
+        # Vertical space available to the five panels above the button.
+        avail = h - margin * 2 - gap * 5 - advance_h
+
+        # (name, intended proportion of window height, absolute floor)
+        specs = [
+            ("stats",     0.12,  72),
+            ("detail",    0.14,  82),
+            ("abilities", 0.20, 120),
+            ("trait",     0.22, 130),
+            ("news",      0.12,  62),
+        ]
+        heights = {name: max(floor, int(h * pct)) for name, pct, floor in specs}
+
+        total = sum(heights.values())
+        if total > avail > 0:
+            # Shrink every panel by the same factor rather than letting the last
+            # one fall off the bottom. Floored at 1px so no panel vanishes
+            # outright; the grid and news panels scroll, so a short panel
+            # degrades gracefully instead of overflowing.
+            factor = avail / total
+            heights = {name: max(1, int(value * factor)) for name, value in heights.items()}
+
         current_y = margin
+        stats_rect = pygame.Rect(right_x, current_y, right_w, heights["stats"])
+        current_y = stats_rect.bottom + gap
 
-        # Stats panel - compact
-        stats_h = max(100, int(h * 0.12))
-        stats_rect = pygame.Rect(right_x, current_y, right_w, stats_h)
-        current_y = stats_rect.bottom + margin
+        detail_rect = pygame.Rect(right_x, current_y, right_w, heights["detail"])
+        current_y = detail_rect.bottom + gap
 
-        # Detail panel - medium
-        detail_h = max(120, int(h * 0.14))
-        detail_rect = pygame.Rect(right_x, current_y, right_w, detail_h)
-        current_y = detail_rect.bottom + margin
+        abilities_rect = pygame.Rect(right_x, current_y, right_w, heights["abilities"])
+        current_y = abilities_rect.bottom + gap
 
-        # Tactical Abilities - LARGE (3 buttons stacked vertically with room to breathe)
-        abilities_h = max(180, int(h * 0.20))
-        abilities_rect = pygame.Rect(right_x, current_y, right_w, abilities_h)
-        current_y = abilities_rect.bottom + margin
+        trait_rect = pygame.Rect(right_x, current_y, right_w, heights["trait"])
+        current_y = trait_rect.bottom + gap
 
-        # Trait Evolution - LARGE (4 trait cards with full visibility)
-        trait_h = max(200, int(h * 0.22))
-        trait_rect = pygame.Rect(right_x, current_y, right_w, trait_h)
-        current_y = trait_rect.bottom + margin
+        news_rect = pygame.Rect(right_x, current_y, right_w, heights["news"])
+        current_y = news_rect.bottom + gap
 
-        # News ticker - medium
-        news_h = max(100, int(h * 0.12))
-        news_rect = pygame.Rect(right_x, current_y, right_w, news_h)
-        current_y = news_rect.bottom + margin
-
-        # Advance button - use remaining space
-        advance_h = max(80, h - current_y - margin)
-        advance_rect = pygame.Rect(right_x, current_y, right_w, advance_h)
+        # Any slack beyond the reserved height still flows to the advance
+        # button, so it keeps growing into spare space as before.
+        advance_rect = pygame.Rect(
+            right_x, current_y, right_w, max(advance_h, h - current_y - margin)
+        )
 
         # Analytics Modal (86% of screen, centered)
         modal_w = int(w * 0.86)
@@ -197,7 +223,16 @@ class App:
             modal_h
         )
 
-        # Rebuild all panels
+        # Rebuild all panels.
+        #
+        # This runs on every resize and fullscreen toggle, and it replaces the
+        # panel OBJECTS rather than repositioning them. Anything these panels
+        # hold as state -- the news feed's backlog, whether the analytics
+        # overlay is open -- would be silently discarded by a window resize, so
+        # it is captured here and restored onto the new instances below.
+        preserved_news = list(self.news_ticker.events) if hasattr(self, 'news_ticker') else []
+        modal_was_visible = self.analytics_modal.visible if hasattr(self, 'analytics_modal') else False
+
         self.race_bar = RaceBar(race_bar_rect, self.font_body, self.font_header)
 
         if hasattr(self, 'map_view'):
@@ -211,6 +246,9 @@ class App:
         self.news_ticker = NewsTicker(news_rect, self.font_small)
         self.advance_button = AdvanceButton(advance_rect, self.font_header)
         self.analytics_modal = AnalyticsModal(modal_rect, self.font_body, self.font_header)
+
+        self.news_ticker.events = preserved_news[: self.news_ticker.max_items]
+        self.analytics_modal.visible = modal_was_visible
 
     def _build_default_world(self) -> WorldGraph:
         if self.selected_map_name == "world":
@@ -275,6 +313,12 @@ class App:
             self.news_ticker.push(f"[DATA] {warning}")
         self.selected_region = None
         self.hovered_region = None
+        # A new game starts with the analytics overlay closed. Without this the
+        # flag survives the game-over screen, and since the overlay consumes
+        # every click inside its (86% x 88%) rectangle while drawing nothing
+        # fresh, a player who opened the charts before losing would find most
+        # of the next game's screen unclickable.
+        self.analytics_modal.visible = False
         self._seeded = True
         self.state = STATE_PLAYING
 

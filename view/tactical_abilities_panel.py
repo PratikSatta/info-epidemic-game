@@ -43,6 +43,11 @@ class AbilityButton:
         self.cooldown_max = cooldown_max
         self.cooldown_remaining = 0
         self.hovered = False
+        # Set here, not only in update_state: update_state runs during draw, and
+        # a click can be processed on a frame before the first draw after a
+        # layout rebuild. is_clicked() reads this attribute, so leaving it unset
+        # meant click-before-first-paint raised AttributeError.
+        self.enabled = False
 
     def update_state(self, cooldown: int, points_available: int, mouse_pos: tuple[int, int]) -> None:
         self.cooldown_remaining = cooldown
@@ -154,6 +159,7 @@ class TacticalAbilitiesPanel(ScrollablePanel):
     def draw(self, surface: pygame.Surface, engine) -> None:
         """Draw the panel with all ability buttons, clipped with scroll."""
         mouse_pos = pygame.mouse.get_pos()
+        content_rect = self.get_content_rect()
 
         # Draw panel background
         pygame.draw.rect(surface, theme.PANEL_BG, self.rect, border_radius=12)
@@ -163,27 +169,38 @@ class TacticalAbilitiesPanel(ScrollablePanel):
         header = self.header_font.render("⚡ TACTICAL POWERS", True, theme.TEXT_PRIMARY)
         surface.blit(header, (self.rect.x + 16, self.rect.y + 12))
 
-        # Render buttons with scroll offset
-        for button in self.buttons:
-            ability_state = engine.active_abilities.get(button.ability_key, {})
-            cooldown = ability_state.get("cooldown", 0)
-
-            # Adjust mouse position for scroll when checking hover
+        # Hover only counts inside the scrollable area. Without this, pointing at
+        # the fixed header lights up whichever card is scrolled underneath it.
+        if content_rect.collidepoint(mouse_pos):
             adjusted_mouse = (mouse_pos[0], mouse_pos[1] + self.scroll_offset)
-            button.update_state(cooldown, engine.strain.points_available, adjusted_mouse)
+        else:
+            adjusted_mouse = (-1, -1)
 
-            # Draw button with scroll offset applied
-            scrolled_rect = button.rect.copy()
-            scrolled_rect.y -= self.scroll_offset
+        # Clip to the content area so a partially-scrolled card is cut off at
+        # the header edge instead of painting over it and out of the panel.
+        previous_clip = surface.get_clip()
+        surface.set_clip(content_rect)
+        try:
+            for button in self.buttons:
+                ability_state = engine.active_abilities.get(button.ability_key, {})
+                cooldown = ability_state.get("cooldown", 0)
+                button.update_state(cooldown, engine.strain.points_available, adjusted_mouse)
 
-            # Only draw if visible in content area
-            content_rect = self.get_content_rect()
-            if scrolled_rect.bottom > content_rect.top and scrolled_rect.top < content_rect.bottom:
+                # Draw button with scroll offset applied
+                scrolled_rect = button.rect.copy()
+                scrolled_rect.y -= self.scroll_offset
+
+                # Skip anything scrolled entirely out of view
+                if scrolled_rect.bottom <= content_rect.top or scrolled_rect.top >= content_rect.bottom:
+                    continue
+
                 # Temporarily modify button rect for drawing
                 original_rect = button.rect
                 button.rect = scrolled_rect
                 button.draw(surface, self.font, self.font)
                 button.rect = original_rect
+        finally:
+            surface.set_clip(previous_clip)
 
         # Draw scroll indicator if scrollable
         if self.max_scroll > 0:
@@ -192,6 +209,13 @@ class TacticalAbilitiesPanel(ScrollablePanel):
 
     def handle_click(self, point: tuple[int, int]) -> str | None:
         """Returns the ability key if a button was clicked, None otherwise."""
+        # Button rects are stored in CONTENT space (unscrolled), so a screen
+        # point anywhere in the window can coincidentally map onto one. Clicking
+        # the trait panel's header, a few pixels below this panel, used to fire
+        # whichever ability happened to land there. Bound the hit test to the
+        # panel's own scrollable area first.
+        if not self.get_content_rect().collidepoint(point):
+            return None
         adjusted_point = self.adjust_point_for_scroll(point)
         for button in self.buttons:
             if button.is_clicked(adjusted_point):
