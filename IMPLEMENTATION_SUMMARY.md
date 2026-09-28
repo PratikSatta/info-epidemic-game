@@ -278,10 +278,26 @@ PNG figure export is **not implemented** — see Known gaps.
 
 ## Verification status
 
-**There is no automated test suite.** The `tests/` directory exists but is empty,
-and no test framework is installed or configured. Earlier revisions of this
-document listed unit tests and an integration test as passing; those tests were
-never written, and that claim has been removed rather than restated.
+**The test suite is a single script, not a framework.** `tests/verify_simulation.py`
+runs 60 checks against the real engine and the real pygame app (headless) and
+exits non-zero if any fail:
+
+```
+python tests/verify_simulation.py
+```
+
+It is a plain script rather than a pytest suite because no test framework is
+installed or configured. Earlier revisions of this document listed unit tests
+and an integration test as passing; those tests were never written, and that
+claim was removed rather than restated. The script replaces it with checks that
+actually execute — it asserts on real simulation runs, not on mocks.
+
+One check currently fails, and it is the already-documented missing example
+CSVs (see Known gaps): an exit code of 1 with that as the only failure is the
+expected state of this repository, not a regression. The four warnings are the
+other documented gaps (PNG figures never generated, same-second export
+overwrite, country centroids outside their outlines, and RSF modifiers lost to
+the clamp).
 
 What has actually been verified, by executing the program:
 
