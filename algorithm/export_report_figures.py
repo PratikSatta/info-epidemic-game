@@ -21,6 +21,11 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+# Imported rather than hardcoded so the report states the threshold the engine
+# actually evaluates. Hardcoding it here is how the in-game help text ended up
+# advertising a 95% win line that no version of the rules ever used.
+from model.world_graph import LOSS_MINDSHARE
+
 
 def export_academic_report(telemetry_history: list[dict],
                           strain_name: str,
@@ -79,16 +84,26 @@ def _export_csv(history: list[dict], output_path: Path) -> None:
     """Export telemetry as CSV for spreadsheet analysis."""
     with open(output_path, "w", encoding="utf-8") as f:
         # Header
-        f.write("tick,susceptible,exposed,believing,skeptical,population,incidence,r_t,counter_active\n")
+        f.write("tick,susceptible,exposed,believing,skeptical,population,incidence,"
+                "r_t,counter_active,corrected_mindshare\n")
 
         # Data rows. r_t is written as an empty cell when the estimator has too
         # little history for a meaningful value, rather than as 0, so the
         # column cannot be misread as "R_t was zero here".
+        #
+        # corrected_mindshare rides along because it is the quantity the LOSS
+        # CONDITION is evaluated against (K/(K+B), see
+        # WorldGraph.is_world_corrected). Without it in the export the defining
+        # variable of the run is missing from the data, and an analyst is left
+        # dividing skeptical by population -- which is a different number and
+        # not the one that ended the game. Read with .get so a history built by
+        # hand elsewhere cannot crash the export.
         for h in history:
             r_t = "" if h["r_t"] is None else h["r_t"]
+            mindshare = h.get("corrected_mindshare", "")
             f.write(f"{h['tick']},{h['susceptible']},{h['exposed']},{h['believing']},"
                    f"{h['skeptical']},{h['population']},{h['incidence']},{r_t},"
-                   f"{int(h['counter_active'])}\n")
+                   f"{int(h['counter_active'])},{mindshare}\n")
 
 
 def _export_json(history: list[dict], strain_name: str, model_name: str, output_path: Path) -> None:
@@ -155,6 +170,10 @@ def _export_summary(history: list[dict], strain_name: str, model_name: str, outp
         "final_believing": final_state["believing"],
         "final_skeptical": final_state["skeptical"],
         "final_susceptible": final_state["susceptible"],
+        # The quantity the loss condition is evaluated against, so the report
+        # states the number that actually decided the run rather than only the
+        # raw compartment counts it is computed from.
+        "final_corrected_mindshare": final_state.get("corrected_mindshare"),
     }
 
     # Write formatted summary
@@ -205,7 +224,18 @@ def _export_summary(history: list[dict], strain_name: str, model_name: str, outp
         total_pop = final_state["population"]
         f.write(f"Susceptible: {summary['final_susceptible']:,} ({summary['final_susceptible']/total_pop*100:.1f}%)\n")
         f.write(f"Believing: {summary['final_believing']:,} ({summary['final_believing']/total_pop*100:.1f}%)\n")
-        f.write(f"Skeptical: {summary['final_skeptical']:,} ({summary['final_skeptical']/total_pop*100:.1f}%)\n\n")
+        f.write(f"Skeptical: {summary['final_skeptical']:,} ({summary['final_skeptical']/total_pop*100:.1f}%)\n")
+        # Reported separately from the population shares above because the
+        # loss condition is a MINDSHARE, not a share of total population: the
+        # fact-checkers win once they hold LOSS_MINDSHARE of everyone who has
+        # an opinion, which is why this number can differ sharply from the
+        # Skeptical percentage on the line above it.
+        final_mindshare = summary.get("final_corrected_mindshare")
+        if final_mindshare is not None:
+            f.write(f"Corrected mindshare K/(K+B): {final_mindshare*100:.1f}% "
+                    f"(loss condition: {LOSS_MINDSHARE*100:.0f}%)\n\n")
+        else:
+            f.write("\n")
 
         f.write(f"RESEARCH FOUNDATIONS\n")
         f.write(f"{'-' * 60}\n")

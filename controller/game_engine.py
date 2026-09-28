@@ -30,6 +30,11 @@ class GameEngine:
         self.points_per_tick = points_per_tick
 
         self.tick_count = 0
+        # Highest B/N the whole run reached. Tracked rather than derived from
+        # the final telemetry row, because a loss ends the run with belief
+        # already collapsed -- reading "peak" off the last row reports ~0.2%
+        # for a run whose belief actually peaked at 73%.
+        self.peak_belief = 0.0
         self.state = GameState.RUNNING
         self.current_ai_focus = None
         self.last_strike_result = None
@@ -59,6 +64,7 @@ class GameEngine:
         # Clear any incidence history from a previous run on this engine, so the
         # R_t estimator does not carry a stale curve across a fresh seeding.
         self.rt_estimator.reset()
+        self.peak_belief = self.world.global_infection_ratio()
 
     def attempt_trait_acquisition(self, trait: Trait) -> bool:
         """Player-facing action: try to buy/unlock a trait. Returns success bool."""
@@ -126,10 +132,18 @@ class GameEngine:
         self.last_expired_effects.extend(self.world.tick_region_effects())
 
         self.tick_count += 1
+        self.peak_belief = max(self.peak_belief, self.world.global_infection_ratio())
         self._record_telemetry()
         self._check_game_over()
 
     def _check_game_over(self) -> None:
+        # The win is checked FIRST, and both conditions can be true on the
+        # same tick, so the ordering is a real decision rather than a
+        # formality: a world whose belief has already crossed the win line
+        # should not be reclassified as lost just because the skeptic share
+        # has also climbed. Measured peaks arrive well before the mindshare
+        # test fires (t=14-48 against t=65-114), so a player who reaches the
+        # win line keeps it.
         if self.world.is_world_saturated():
             self.state = GameState.WON
         elif self.world.is_world_corrected():
@@ -171,6 +185,11 @@ class GameEngine:
             "incidence": int(self.spread_algo.last_incidence),
             "r_t": round(r_t, 3) if r_t is not None else None,
             "counter_active": self.counter.active,
+            # The quantity the loss condition is actually evaluated against.
+            # Exported so the defining variable of the run is in the data,
+            # rather than leaving an analyst to recompute it from the raw
+            # compartment counts (and to mistake K/N for the rule).
+            "corrected_mindshare": round(self.world.corrected_mindshare(), 4),
         })
 
     def use_tactical_ability(self, ability_name: str,
@@ -272,6 +291,8 @@ class GameEngine:
         return {
             "ticks": self.tick_count,
             "global_infection_ratio": round(self.world.global_infection_ratio(), 3),
+            "peak_belief": round(self.peak_belief, 4),
+            "corrected_mindshare": round(self.world.corrected_mindshare(), 4),
             "total_exposed": self.world.total_exposed(),
             "total_believing": self.world.total_believing(),
             "total_skeptical": self.world.total_skeptical(),

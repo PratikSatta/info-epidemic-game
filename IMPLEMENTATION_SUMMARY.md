@@ -122,12 +122,27 @@ cooldown, calibrated to Porter et al. (2021).
 
 ### Win / loss conditions
 
-- **Won** — believing population reaches 75% of the total
-- **Lost** — corrected population reaches 90% of the total
+- **Won** — believing population reaches 70% of the total (`B / N`)
+- **Lost** — skeptics reach 90% of the *engaged* population (`K / (K + B)`)
 
-The 75% threshold is deliberate (lowered from 95%): even highly viral
-misinformation rarely achieves universal penetration, but a supermajority
-represents decisive capture of the information environment.
+Both values are named constants in `model/world_graph.py` (`WIN_BELIEF_SHARE`,
+`LOSS_MINDSHARE`) and are interpolated into the in-game help text, so the rules
+and the documentation of them cannot drift apart again — the help text
+previously advertised a 95% win line that no version of the rules ever used.
+
+The win line is deliberately below universal saturation (which was 95%
+originally, then 75%): even highly viral misinformation rarely achieves complete
+penetration, but a strong majority represents decisive capture of the
+information environment. The specific value is calibrated against measured
+peaks rather than asserted — see the balance rows in the known-gaps table.
+
+The loss condition is a **mindshare**, not a share of the total population.
+`K / N ≥ 0.90` is bounded above by the fraction of people who ever pass through
+Believing, so any mechanism that lowers peak belief also lowers the reachable
+ceiling on `K` and the loss stops being reachable. It also fires roughly 2,700
+ticks after the game is decided: once belief has collapsed there is almost no
+inflow into `K`, which can then only creep up as the last stragglers are
+corrected a few people per tick.
 
 ---
 
@@ -320,8 +335,12 @@ were addressed in the audit-fix pass and are recorded here only for the record.
 | R_t | Inflated to ~150 rather than ~1: when the countermeasure is inactive a placeholder `gamma = 0.001` divides into R_t. This squashed the in-game chart (threshold line rendered at ~0.7% height), always reported "GROWTH", and made the reported "R_t reduction" an artifact | **fixed** |
 | Balance | The 90% loss condition is unreachable — corrections cap at 12%/tick against 5%/tick waning, so corrected population plateaus near 50% | **fixed** — the plateau was a symptom of the closed cycle, not of the threshold. With the durable fraction in place the loss condition is reached; see the two rows below for the remaining timing question |
 | Balance | The default scenario on the Nepal map never terminates — it reaches neither condition and runs indefinitely | **fixed** — caused by the missing durable fraction (see *Waning immunity*); the default scenario now resolves and reaches the loss condition, though the trigger fires later than it should (next row) |
-| Balance | The loss trigger is formulated against total population (`K/N ≥ 0.90`), but the outcome is decided far earlier. At `durable = 0.39` the default scenario's corrected-to-believing mindshare `K/(K+B)` passes 90% at tick 75 and belief goes extinct at tick 259 — yet `K/N` does not reach 90% until tick 2742, so ~2,500 ticks of a decided game run on | open |
-| Balance | The earthquake scenario on Nepal reaches the 75% win in ~15 ticks, so the most expensive ability is barely affordable in a winning run | open |
+| Balance | The loss trigger was formulated against total population (`K/N ≥ 0.90`), but the outcome is decided far earlier. At `durable = 0.39` the default scenario's corrected-to-believing mindshare `K/(K+B)` passes 90% at tick 75 and belief goes extinct at tick 259 — yet `K/N` does not reach 90% until tick 2742, so ~2,500 ticks of a decided game ran on | **fixed** — the loss is now the mindshare test `K/(K+B) ≥ 0.90` (`WorldGraph.is_world_corrected`). The default scenario ends at tick 75 instead of 2742 |
+| Balance | The win line was unreachable on the default scenario: measured peak belief is 72.9–74.7% under SIR and 60.7–62.5% under SEIR, under *every* play policy, so the 75% line could never be crossed and the loss was the only reachable ending | **fixed** — lowered to 70%, which makes the default SIR game winnable (t≈30) while leaving the loss reachable (default SEIR still loses, t≈92) |
+| Balance | Player *skill* does not decide the outcome — the tactical abilities move peak belief by only 1–2 percentage points, because the countermeasure activates early and reaches full strength within ~37 ticks. At a 70% win line the result is determined by the scenario and model choice (default SIR wins, default SEIR loses) regardless of what the player does. There is no value of the win threshold at which play becomes decisive until the countermeasure's activation and ramp are rebalanced | open |
+| Balance | `sensationalist_blitz` is actively counterproductive: converting Susceptible → Believing raises the global infection ratio, which trips the countermeasure's activation threshold sooner (tick 11 rather than tick 23) and so ends the run earlier than not casting it | open |
+| Balance | The earthquake scenario on Nepal reaches the 70% win in ~15 ticks, so the most expensive ability (`echo_chamber`, 20 points at 1 point/tick) is unaffordable in a winning run | open |
+| UI | The game-over screen labelled the *final* belief ratio "Peak Belief", reporting ~0.2% for a run whose belief actually peaked at 73% | **fixed** — the engine now tracks `peak_belief` across the whole run |
 | Export | PNG figures are never generated — `generate_matplotlib_figures()` is defined but called from nowhere | open |
 | Export | Filenames use second granularity, so pressing `E` twice within one second silently overwrites the first dataset | open |
 | Custom data | The CSV path is unreachable — `data/regions_example.csv` and `data/strain_config_example.csv` do not exist and were never committed | open |

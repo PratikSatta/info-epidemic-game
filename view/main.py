@@ -11,7 +11,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from model.region import Region
-from model.world_graph import WorldGraph
+from model.world_graph import WorldGraph, WIN_BELIEF_SHARE, LOSS_MINDSHARE
 from model.countermeasure import CounterMeasure
 from model.trait import VisualTrait, EmotionalTrait, PlatformTrait, ResistanceTrait
 from model.real_world_data import build_province_layout
@@ -630,7 +630,13 @@ class App:
             ("▶ Player-Paced Turns:", "The simulation advances step-by-step when you click ADVANCE or press SPACE."),
             ("🧬 Trait Evolution:", "Spend accumulated Belief Points on contagion vectors and resistance shields."),
             ("🌍 Real Geography & Networks:", "Hover and click nations or platforms. Click Nepal to drill into districts."),
-            ("🏁 Infection Race:", "Reach 95% global belief before fact-checkers establish 90% skeptical immunity."),
+            # Both numbers are interpolated from the constants the engine
+            # actually evaluates, so this text cannot drift out of sync with
+            # the rules again -- it previously claimed 95% belief and "90%
+            # skeptical immunity", neither of which was the real threshold.
+            ("🏁 Infection Race:",
+             f"Reach {WIN_BELIEF_SHARE:.0%} global belief before fact-checkers "
+             f"win over {LOSS_MINDSHARE:.0%} of everyone who has an opinion."),
             ("⚠️ Strike Alerts & Crackdown:", "Fact-checkers telegraph targeted strikes 1-3 turns ahead — defend in time!"),
         ]
 
@@ -714,9 +720,17 @@ class App:
 
         stat_lines = [
             f"⏱ Turns Played: {summary['ticks']}",
-            f"📈 Peak Belief: {summary['global_infection_ratio'] * 100:.1f}%",
+            # peak_belief, not the current ratio: a loss ends the run with
+            # belief already collapsed, so reading this off the final state
+            # reports ~0.2% for a run that actually peaked at 73%.
+            f"📈 Peak Belief: {summary['peak_belief'] * 100:.1f}%",
             f"👥 Total Believers: {summary['total_believing']:,}",
-            f"🛡️ Total Corrected: {summary['total_skeptical']:,}",
+            # The mindshare is shown alongside the raw count because it is the
+            # quantity the loss is actually evaluated against (see
+            # WorldGraph.is_world_corrected). Without it the player cannot see
+            # how close the fact-checkers came to winning the argument.
+            f"🛡️ Corrected: {summary['total_skeptical']:,} "
+            f"({summary['corrected_mindshare']:.1%} of opinion)",
             f"🧬 Trait Upgrades: {total_traits}",
         ]
         if most_resistant is not None and most_resistant.skeptical > 0:
