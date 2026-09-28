@@ -5,8 +5,12 @@ Displays live S-E-I-R curves, R_t (effective reproduction number) tracking,
 and epidemic phase annotations in an interactive overlay window.
 
 Mathematical Foundation:
-- SEIR Compartmental Model with waning immunity (SIRS variant)
-- Effective Reproduction Number: R_t = (β/γ) × (S(t)/N)
+- SEIR compartmental model with waning immunity (SIRS variant)
+- Effective reproduction number estimated from the incidence curve via the
+  renewal equation, R_t = inc(t) / Σ w(s)·inc(t−s), where w is the active
+  spread model's own generation-time distribution (Cori et al. 2013). It is
+  measured rather than derived from β/γ because this model has no constant
+  removal rate — see algorithm/reproduction_number.py.
 - Epidemic threshold: R_t = 1.0 (below = decay, above = growth)
 
 Academic Context:
@@ -200,11 +204,21 @@ class AnalyticsModal:
         if len(history) < 2:
             return
 
-        # Extract R_t series
+        # Extract R_t series. Entries are None while the estimator does not yet
+        # have enough history to produce a meaningful number (the first tick or
+        # two of any run, and the first few ticks of SEIR runs, where the
+        # generation-time mass has not yet been covered), so they are excluded
+        # from the axis scaling rather than being treated as zero.
         ticks = [h["tick"] for h in history]
         max_tick = max(ticks)
-        rt_values = [h["r_t"] for h in history]
-        max_rt = max(3.0, max(rt_values))
+        rt_values = [h["r_t"] for h in history if h["r_t"] is not None]
+        # Floor the axis at 3.0 so the R_t = 1.0 threshold line stays legible,
+        # but never below the data -- scaling to the observed peak keeps the
+        # whole curve on screen. (A true floor, not the no-op this line used to
+        # be: with the old beta/gamma placeholder R_t reached 150, so max()
+        # always returned the outlier and the threshold line rendered at
+        # 0.7% of the graph height.)
+        max_rt = max(3.0, max(rt_values)) if rt_values else 3.0
 
         # Graph bounds
         gx, gy, gw, gh = (
@@ -233,20 +247,34 @@ class AnalyticsModal:
         threshold_label = self.font.render("R_t = 1.0 (Threshold)", True, theme.COLOR_WARNING)
         surface.blit(threshold_label, (gx + gw - threshold_label.get_width() - 10, threshold_y - 20))
 
-        # Plot R_t curve
-        points = []
+        # Plot R_t curve, skipping ticks whose estimate is undefined and
+        # breaking the line across them so it does not visually bridge a gap.
+        segments: list[list[tuple[int, int]]] = []
+        current_segment: list[tuple[int, int]] = []
         for h in history:
+            if h["r_t"] is None:
+                if len(current_segment) > 1:
+                    segments.append(current_segment)
+                current_segment = []
+                continue
             px = gx + int((h["tick"] / max(1, max_tick)) * gw)
-            py = gy + gh - int((h["r_t"] / max_rt) * gh)
-            points.append((px, py))
+            py = gy + gh - int((min(h["r_t"], max_rt) / max_rt) * gh)
+            current_segment.append((px, py))
+        if len(current_segment) > 1:
+            segments.append(current_segment)
 
-        if len(points) > 1:
+        for points in segments:
             pygame.draw.lines(surface, theme.ACCENT_BRIGHT, False, points, 3)
 
         # Current R_t indicator
         current_rt = history[-1]["r_t"]
-        current_color = theme.COLOR_DANGER if current_rt > 1.0 else theme.COLOR_CURE
-        current_text = self.font.render(f"Current R_t: {current_rt:.2f}", True, current_color)
+        if current_rt is None:
+            current_text = self.font.render(
+                "Current R_t: warming up", True, theme.TEXT_MUTED
+            )
+        else:
+            current_color = theme.COLOR_DANGER if current_rt > 1.0 else theme.COLOR_CURE
+            current_text = self.font.render(f"Current R_t: {current_rt:.2f}", True, current_color)
         surface.blit(current_text, (gx + 10, gy + 10))
 
         # Phase annotations

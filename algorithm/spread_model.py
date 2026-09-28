@@ -24,6 +24,39 @@ class SpreadAlgorithm(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def generation_time_weights(self, strain: InfoStrain, max_lag: int) -> list[float]:
+        """
+        The generation-time (serial-interval) distribution w(1..max_lag) for
+        THIS model, used by the renewal-equation R_t estimator.
+
+        The two models genuinely differ here, so this cannot be a shared
+        constant: in SIR a person becomes infectious within the same tick they
+        are exposed and w is a point mass at lag 1, whereas in SEIR they must
+        first pass through the latency stage, making w geometric. See
+        algorithm/reproduction_number.py for why that distinction changes the
+        reported R_t by roughly a third under SEIR.
+
+        Weights need not sum to exactly 1.0; the estimator renormalises over
+        whichever lags it has history for.
+        """
+        raise NotImplementedError
+
+    @property
+    def last_incidence(self) -> float:
+        """
+        New infections (people who left Susceptible) during the most recent
+        tick(), from natural transmission only.
+
+        Deliberately excludes exposures forced by tactical abilities via
+        inject_exposure(): R_t measures how many new believers the existing
+        believers generate, and a Sensationalist Blitz is an external shock
+        rather than transmission. Its downstream effect still enters the
+        series normally, through the new believers it creates spreading on
+        subsequent ticks.
+        """
+        return self._last_incidence
+
 
 class SIRSpreadModel(SpreadAlgorithm):
     def __init__(self):
@@ -62,6 +95,7 @@ class SIRSpreadModel(SpreadAlgorithm):
         # analogous to seasonal flu models where prior immunity wanes.
         self._waning_immunity_rate: float = 0.05
         self._waning_carry: dict = {}
+        self._last_incidence: float = 0.0
 
     def tick(self, world: WorldGraph, strain: InfoStrain, counter: CounterMeasure) -> None:
         """
@@ -124,6 +158,12 @@ class SIRSpreadModel(SpreadAlgorithm):
             else:
                 correction_deltas[region] = 0
 
+        # New infections this tick (Susceptible -> Believing), recorded for the
+        # renewal-equation R_t estimator. Computed from the deltas rather than
+        # from the change in compartment sizes so it excludes the waning
+        # Skeptical -> Susceptible flow, which is not an infection.
+        self._last_incidence = float(sum(exposure_deltas.values()))
+
         # --- Apply all deltas ---
         for region in world.regions:
             if exposure_deltas[region] > 0:
@@ -148,6 +188,14 @@ class SIRSpreadModel(SpreadAlgorithm):
     def inject_exposure(self, region, amount: int) -> None:
         """SIR has no latency stage, so a forced encounter lands straight in Believing."""
         region.expose(amount)
+
+    def generation_time_weights(self, strain: InfoStrain, max_lag: int) -> list[float]:
+        """
+        A Susceptible becomes Believing and is able to transmit within the same
+        tick, so the generation time is exactly one tick: all the mass sits at
+        lag 1 and the renewal equation reduces to inc(t)/inc(t-1).
+        """
+        return [1.0]
 
 
 class SEIRSpreadModel(SpreadAlgorithm):
@@ -180,6 +228,7 @@ class SEIRSpreadModel(SpreadAlgorithm):
         # Waning immunity carry -- same research basis as SIRSpreadModel.
         self._waning_immunity_rate: float = 0.05
         self._waning_carry: dict = {}
+        self._last_incidence: float = 0.0
 
     def tick(self, world: WorldGraph, strain: InfoStrain, counter: CounterMeasure) -> None:
         counter.tick_growth()
@@ -240,6 +289,12 @@ class SEIRSpreadModel(SpreadAlgorithm):
             else:
                 correction_deltas[region] = 0
 
+        # New infections this tick (Susceptible -> Exposed), recorded for the
+        # renewal-equation R_t estimator. This is the infection event in SEIR --
+        # the Exposed -> Believing step is the latency stage resolving, not a
+        # new infection -- and it excludes the waning flow into Susceptible.
+        self._last_incidence = float(sum(new_exposed_deltas.values()))
+
         # --- Apply all deltas simultaneously ---
         # Order matters here only in that we must convert Exposed->Believing
         # using the PRE-tick exposed count (already captured above) before
@@ -270,3 +325,24 @@ class SEIRSpreadModel(SpreadAlgorithm):
         people land in Exposed and become Believing at the normal incubation
         rate, so Sensationalist Blitz cannot shortcut the SEIR structure."""
         region.move_to_exposed(amount)
+
+    def generation_time_weights(self, strain: InfoStrain, max_lag: int) -> list[float]:
+        """
+        Geometric generation time. Someone who has just been exposed becomes
+        Believing -- and therefore able to transmit -- with probability
+        incubation_rate each tick, so the chance that their first transmission
+        opportunity falls on lag s is (1 - sigma)^(s-1) * sigma.
+
+        At the default incubation_rate of 0.35 this puts the mean generation
+        time at about 2.9 ticks, which is why the one-tick ratio estimator
+        understates R_t here. Read from the strain at call time rather than
+        cached, so a future trait that alters incubation_rate is picked up
+        automatically. (No trait currently does.)
+        """
+        sigma = max(1e-6, min(1.0, strain.incubation_rate))
+        weights: list[float] = []
+        remaining = 1.0
+        for _ in range(max_lag):
+            weights.append(remaining * sigma)
+            remaining *= (1.0 - sigma)
+        return weights

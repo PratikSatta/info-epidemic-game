@@ -79,12 +79,16 @@ def _export_csv(history: list[dict], output_path: Path) -> None:
     """Export telemetry as CSV for spreadsheet analysis."""
     with open(output_path, "w", encoding="utf-8") as f:
         # Header
-        f.write("tick,susceptible,exposed,believing,skeptical,population,r_t,counter_active\n")
+        f.write("tick,susceptible,exposed,believing,skeptical,population,incidence,r_t,counter_active\n")
 
-        # Data rows
+        # Data rows. r_t is written as an empty cell when the estimator has too
+        # little history for a meaningful value, rather than as 0, so the
+        # column cannot be misread as "R_t was zero here".
         for h in history:
+            r_t = "" if h["r_t"] is None else h["r_t"]
             f.write(f"{h['tick']},{h['susceptible']},{h['exposed']},{h['believing']},"
-                   f"{h['skeptical']},{h['population']},{h['r_t']},{int(h['counter_active'])}\n")
+                   f"{h['skeptical']},{h['population']},{h['incidence']},{r_t},"
+                   f"{int(h['counter_active'])}\n")
 
 
 def _export_json(history: list[dict], strain_name: str, model_name: str, output_path: Path) -> None:
@@ -112,8 +116,16 @@ def _export_summary(history: list[dict], strain_name: str, model_name: str, outp
     peak_believing = max(h["believing"] for h in history)
     peak_believing_tick = next(h["tick"] for h in history if h["believing"] == peak_believing)
 
-    peak_rt = max(h["r_t"] for h in history)
-    peak_rt_tick = next(h["tick"] for h in history if h["r_t"] == peak_rt)
+    # R_t is None on ticks where the estimator had too little history to
+    # produce a meaningful value, so every statistic below is computed over the
+    # defined entries only. Treating None as 0 would drag the averages and the
+    # reported reduction toward zero.
+    rt_series = [(h["tick"], h["r_t"]) for h in history if h["r_t"] is not None]
+
+    if rt_series:
+        peak_rt_tick, peak_rt = max(rt_series, key=lambda pair: pair[1])
+    else:
+        peak_rt = peak_rt_tick = None
 
     final_rt = final_state["r_t"]
 
@@ -121,23 +133,24 @@ def _export_summary(history: list[dict], strain_name: str, model_name: str, outp
 
     # Calculate average R_t before and after countermeasure
     if countermeasure_activation:
-        pre_counter_rt = [h["r_t"] for h in history if h["tick"] < countermeasure_activation]
-        post_counter_rt = [h["r_t"] for h in history if h["tick"] >= countermeasure_activation]
-        avg_rt_pre = sum(pre_counter_rt) / len(pre_counter_rt) if pre_counter_rt else 0
-        avg_rt_post = sum(post_counter_rt) / len(post_counter_rt) if post_counter_rt else 0
+        pre_counter_rt = [rt for tick, rt in rt_series if tick < countermeasure_activation]
+        post_counter_rt = [rt for tick, rt in rt_series if tick >= countermeasure_activation]
+        avg_rt_pre = sum(pre_counter_rt) / len(pre_counter_rt) if pre_counter_rt else None
+        avg_rt_post = sum(post_counter_rt) / len(post_counter_rt) if post_counter_rt else None
     else:
-        avg_rt_pre = sum(h["r_t"] for h in history) / len(history)
+        all_rt = [rt for _, rt in rt_series]
+        avg_rt_pre = sum(all_rt) / len(all_rt) if all_rt else None
         avg_rt_post = None
 
     summary = {
         "total_ticks": final_state["tick"],
         "peak_believing": peak_believing,
         "peak_believing_tick": peak_believing_tick,
-        "peak_rt": round(peak_rt, 3),
+        "peak_rt": round(peak_rt, 3) if peak_rt is not None else None,
         "peak_rt_tick": peak_rt_tick,
-        "final_rt": round(final_rt, 3),
+        "final_rt": round(final_rt, 3) if final_rt is not None else None,
         "countermeasure_activation_tick": countermeasure_activation,
-        "avg_rt_pre_countermeasure": round(avg_rt_pre, 3) if avg_rt_pre else None,
+        "avg_rt_pre_countermeasure": round(avg_rt_pre, 3) if avg_rt_pre is not None else None,
         "avg_rt_post_countermeasure": round(avg_rt_post, 3) if avg_rt_post is not None else None,
         "final_believing": final_state["believing"],
         "final_skeptical": final_state["skeptical"],
@@ -159,23 +172,33 @@ def _export_summary(history: list[dict], strain_name: str, model_name: str, outp
         f.write(f"EPIDEMIC PEAK METRICS\n")
         f.write(f"{'-' * 60}\n")
         f.write(f"Peak Believers: {summary['peak_believing']:,} (Tick {summary['peak_believing_tick']})\n")
-        f.write(f"Peak R_t: {summary['peak_rt']} (Tick {summary['peak_rt_tick']})\n\n")
+        if summary['peak_rt'] is not None:
+            f.write(f"Peak R_t: {summary['peak_rt']} (Tick {summary['peak_rt_tick']})\n\n")
+        else:
+            f.write(f"Peak R_t: not estimated (run too short)\n\n")
 
         f.write(f"EFFECTIVE REPRODUCTION NUMBER (R_t) ANALYSIS\n")
         f.write(f"{'-' * 60}\n")
-        f.write(f"Final R_t: {summary['final_rt']}\n")
+        f.write(f"Final R_t: {summary['final_rt'] if summary['final_rt'] is not None else 'not estimated'}\n")
         if countermeasure_activation:
             f.write(f"Countermeasure Activated: Tick {countermeasure_activation}\n")
             f.write(f"Average R_t (Pre-Countermeasure): {summary['avg_rt_pre_countermeasure']}\n")
             f.write(f"Average R_t (Post-Countermeasure): {summary['avg_rt_post_countermeasure']}\n")
-            rt_reduction = summary['avg_rt_pre_countermeasure'] - summary['avg_rt_post_countermeasure']
-            rt_reduction_pct = (rt_reduction / summary['avg_rt_pre_countermeasure']) * 100
-            f.write(f"R_t Reduction: {rt_reduction:.3f} ({rt_reduction_pct:.1f}%)\n")
+            if summary['avg_rt_pre_countermeasure'] and summary['avg_rt_post_countermeasure'] is not None:
+                rt_reduction = summary['avg_rt_pre_countermeasure'] - summary['avg_rt_post_countermeasure']
+                rt_reduction_pct = (rt_reduction / summary['avg_rt_pre_countermeasure']) * 100
+                f.write(f"R_t Reduction: {rt_reduction:.3f} ({rt_reduction_pct:.1f}%)\n")
+                f.write(f"Below threshold after activation: "
+                        f"{'yes' if summary['avg_rt_post_countermeasure'] < 1.0 else 'no'}\n")
+            else:
+                f.write(f"R_t Reduction: not estimable (insufficient R_t history)\n")
         else:
             f.write(f"Countermeasure: Never Activated\n")
             f.write(f"Average R_t: {summary['avg_rt_pre_countermeasure']}\n")
         f.write(f"\nEpidemic Threshold: R_t = 1.0\n")
-        f.write(f"Final State: {'GROWTH' if summary['final_rt'] > 1.0 else 'DECAY'}\n\n")
+        final_rt = summary['final_rt']
+        verdict = "indeterminate" if final_rt is None else ("GROWTH" if final_rt > 1.0 else "DECAY")
+        f.write(f"Final State: {verdict}\n\n")
 
         f.write(f"FINAL COMPARTMENTAL DISTRIBUTION\n")
         f.write(f"{'-' * 60}\n")
@@ -191,10 +214,22 @@ def _export_summary(history: list[dict], strain_name: str, model_name: str, outp
         f.write(f"1. Porter et al. (2021) - Global fact-checking effectiveness (PNAS)\n")
         f.write(f"2. Guess et al. (2023) - Correction persistence in 10 countries\n")
         f.write(f"3. Nyhan (2021) - Durability of political misperceptions (PNAS)\n")
-        f.write(f"4. Bode & Vraga (2015) - Social media correction mechanisms\n\n")
-        f.write(f"R_t computation follows standard WHO epidemic threshold analysis:\n")
-        f.write(f"  R_t = (β/γ) × (S(t)/N)\n")
-        f.write(f"where β = transmission rate, γ = correction rate, S = susceptible.\n\n")
+        f.write(f"4. Bode & Vraga (2015) - Social media correction mechanisms\n")
+        f.write(f"5. Cori et al. (2013) - Time-varying reproduction numbers (Am. J. Epidemiol.)\n\n")
+        f.write(f"R_t is ESTIMATED from the incidence curve using the renewal equation:\n")
+        f.write(f"  R_t = inc(t) / sum_s w(s) * inc(t - s)\n")
+        f.write(f"where inc(t) = new infections at tick t and w(s) is the generation-time\n")
+        f.write(f"distribution of the active spread model -- a point mass at lag 1 for SIR\n")
+        f.write(f"(where S -> B takes one tick) and geometric with rate incubation_rate for\n")
+        f.write(f"SEIR (which inserts a latency stage).\n\n")
+        f.write(f"It is not derived from beta/gamma, because that analytic form requires a\n")
+        f.write(f"single constant removal rate and this model has none: the countermeasure is\n")
+        f.write(f"the only process that removes anyone from Believing, so before it activates\n")
+        f.write(f"the removal rate is exactly zero and the ratio is undefined. Once active,\n")
+        f.write(f"the rate is time-varying and region-dependent, and spread across the region\n")
+        f.write(f"graph is a metapopulation process with no scalar threshold. Estimating R_t\n")
+        f.write(f"from the realised incidence curve is the standard approach in real-time\n")
+        f.write(f"epidemic analytics and remains valid under all of the above.\n\n")
 
     return summary
 
@@ -235,7 +270,10 @@ def generate_matplotlib_figures(telemetry_history: list[dict],
     exposed = [h["exposed"] for h in telemetry_history]
     believing = [h["believing"] for h in telemetry_history]
     skeptical = [h["skeptical"] for h in telemetry_history]
-    rt_values = [h["r_t"] for h in telemetry_history]
+    # R_t is None on ticks where the estimator lacked the history to produce a
+    # meaningful value, so only the defined points are plotted rather than
+    # letting a None become a zero on the axis.
+    rt_points = [(h["tick"], h["r_t"]) for h in telemetry_history if h["r_t"] is not None]
 
     # Figure 1: SEIR Trajectories
     fig1, ax1 = plt.subplots(figsize=(12, 7), dpi=300)
@@ -258,8 +296,11 @@ def generate_matplotlib_figures(telemetry_history: list[dict],
 
     # Figure 2: R_t Tracking
     fig2, ax2 = plt.subplots(figsize=(12, 7), dpi=300)
-    ax2.plot(ticks, rt_values, 'c-', linewidth=3, label='R_t (Effective Reproduction Number)')
+    if rt_points:
+        ax2.plot([p[0] for p in rt_points], [p[1] for p in rt_points], 'c-', linewidth=3,
+                 label='R_t (Effective Reproduction Number, renewal estimate)')
     ax2.axhline(y=1.0, color='orange', linestyle='--', linewidth=2, label='Epidemic Threshold (R_t = 1.0)')
+    ax2.set_ylim(bottom=0, top=max(3.0, max((p[1] for p in rt_points), default=0.0)) * 1.05)
 
     # Shade regions
     countermeasure_tick = next((h["tick"] for h in telemetry_history if h["counter_active"]), None)

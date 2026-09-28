@@ -4,6 +4,7 @@ from model.countermeasure import CounterMeasure
 from model.trait import Trait
 from model.effect import ActiveEffect
 from algorithm.spread_model import SpreadAlgorithm
+from algorithm.reproduction_number import RenewalRTEstimator
 from algorithm.counter_ai import CounterAI
 from algorithm.strike_manager import StrikeManager
 
@@ -32,6 +33,9 @@ class GameEngine:
         self.state = GameState.RUNNING
         self.current_ai_focus = None
         self.last_strike_result = None
+        # Estimates R_t from the incidence curve; stateful, so it lives for the
+        # duration of one simulation and is reset when a new one is seeded.
+        self.rt_estimator = RenewalRTEstimator()
         # Signals that expired on the most recent tick, so the UI can announce
         # e.g. "Bot Amplification Surge has ended" without re-deriving them.
         self.last_expired_effects: list = []
@@ -52,6 +56,9 @@ class GameEngine:
         if region is None:
             raise ValueError(f"No region named '{seed_region_name}' in world graph")
         region.seed_outbreak(seed_amount)
+        # Clear any incidence history from a previous run on this engine, so the
+        # R_t estimator does not carry a stale curve across a fresh seeding.
+        self.rt_estimator.reset()
 
     def attempt_trait_acquisition(self, trait: Trait) -> bool:
         """Player-facing action: try to buy/unlock a trait. Returns success bool."""
@@ -131,8 +138,8 @@ class GameEngine:
     def _record_telemetry(self) -> None:
         """
         Record a snapshot of the current simulation state for real-time analytics
-        display and academic report export. Computes $R_t$ (effective reproduction
-        number) at the current tick.
+        display and academic report export, including an estimate of $R_t$ (the
+        effective reproduction number) for the current tick.
         """
         total_b = self.world.total_believing()
         total_e = self.world.total_exposed()
@@ -140,12 +147,19 @@ class GameEngine:
         total_n = self.world.total_population()
         total_s = total_n - total_b - total_e - total_k
 
-        # Effective reproduction number: R_t = (beta / gamma) * (S / N)
-        # beta is the EFFECTIVE transmission rate, so an active tactical boost
-        # is reflected in the reported R_t rather than being invisible to it.
-        beta = self.strain.effective_transmission_rate
-        gamma = self.counter.effective_strength_against(self.strain) if self.counter.active else 0.001
-        r_t = (beta / gamma) * (total_s / max(1, total_n))
+        # R_t is ESTIMATED from the incidence curve via the renewal equation,
+        # not derived from beta/gamma. The analytic form requires a single
+        # constant removal rate, and this model has none: the countermeasure is
+        # the only thing that removes anyone from Believing, so before it
+        # activates gamma is exactly zero and beta/gamma is undefined (the
+        # epidemic is a pure SI process at that point). See
+        # algorithm/reproduction_number.py for the full reasoning and the
+        # citation. The estimator returns None while there is too little
+        # history for the number to mean anything.
+        weights = self.spread_algo.generation_time_weights(
+            self.strain, self.rt_estimator.max_lag
+        )
+        r_t = self.rt_estimator.update(self.spread_algo.last_incidence, weights)
 
         self.telemetry_history.append({
             "tick": self.tick_count,
@@ -154,7 +168,8 @@ class GameEngine:
             "believing": total_b,
             "skeptical": total_k,
             "population": total_n,
-            "r_t": round(r_t, 3),
+            "incidence": int(self.spread_algo.last_incidence),
+            "r_t": round(r_t, 3) if r_t is not None else None,
             "counter_active": self.counter.active,
         })
 

@@ -183,13 +183,47 @@ Points accrue at 1 per tick, with a cap of 50 and a starting grant of 5.
 
 ### Telemetry
 
-`GameEngine._record_telemetry()` records a snapshot every tick with eight fields:
-`tick, susceptible, exposed, believing, skeptical, population, r_t, counter_active`.
+`GameEngine._record_telemetry()` records a snapshot every tick with nine fields:
+`tick, susceptible, exposed, believing, skeptical, population, incidence, r_t,
+counter_active`.
+
+`incidence` is new infections during that tick (Susceptible → Believing under
+SIR, Susceptible → Exposed under SEIR) from natural transmission only. Exposures
+forced by a Sensationalist Blitz are excluded — R_t measures how many new
+believers the existing believers generate, and an ability is an external shock
+rather than transmission.
+
+`r_t` is `null` on ticks where the estimator lacks the history to produce a
+meaningful value, rather than a placeholder number.
 
 ### Analytics modal (`A`)
 
 Two live charts: S-E-I-R compartmental trajectories, and R_t tracked against the
-R_t = 1.0 epidemic threshold.
+R_t = 1.0 epidemic threshold. Ticks with an undefined R_t break the curve rather
+than plotting as zero.
+
+### How R_t is computed
+
+R_t is **estimated from the incidence curve** using the renewal equation,
+
+```
+R_t = inc(t) / Σ_{s≥1} w(s) · inc(t−s)
+```
+
+where `w` is the generation-time distribution of the *active* spread model — a
+point mass at lag 1 for SIR, geometric with rate `incubation_rate` for SEIR
+(Cori et al. 2013). It is deliberately **not** derived from `β/γ`: that analytic
+form requires a single constant removal rate, and this model has none. The
+countermeasure is the only process that removes anyone from Believing, so before
+it activates the removal rate is exactly zero and `β/γ` is undefined — the
+epidemic is a pure SI process at that point — and once active the rate is
+time-varying, region-dependent, and metapopulation-wide, with no scalar
+threshold. See `algorithm/reproduction_number.py` for the full reasoning.
+
+Because the estimator is parameterised from the model itself, one implementation
+serves both models: for SIR it reduces *exactly* to `inc(t)/inc(t−1)`, and for
+SEIR it accounts for the latency stage, which the one-tick ratio understates by
+roughly a third.
 
 ### Report export (`E`)
 
@@ -225,6 +259,15 @@ What has actually been verified, by executing the program:
   countries, 202 parameter entries, 202 centroids, no duplicates or malformed
   entries; Nepal has 75 districts across exactly 7 provinces
 - Telemetry keys and the CSV header match the documented schema
+- R_t stays in a plausible band across both models and both scenarios (0.4–2.1,
+  against the old placeholder's 150); the default scenario settles at R_t ≈ 1.0
+  which matches its endless outcome, and the earthquake scenario stays above 1.0
+  while it wins
+- Undefined R_t ticks are reported as `null` in JSON, as an empty cell in CSV and
+  as "warming up" in the modal — never as zero, which would drag every average
+  and the reported reduction toward zero
+- The renewal estimator reduces exactly to `inc(t)/inc(t−1)` for SIR, confirming
+  the implementation against the closed-form case
 - `report_exports/` receives a correct CSV and JSON; peak and final statistics
   cross-check against the CSV
 - The right-hand column fits inside the window at 1440×900, 1024×768, 1000×600,
@@ -248,7 +291,7 @@ were addressed in the audit-fix pass and are recorded here only for the record.
 | Tactical abilities | `bot_surge` multiplied transmission permanently and compounding; the documented 3-turn duration was never enforced | **fixed** |
 | Tactical abilities | `sensationalist_blitz` injected straight into Believing in SEIR mode, skipping the Exposed latency stage | **fixed** |
 | Tactical abilities | No timed-effect system existed at all, which was the root cause of the above | **fixed** |
-| R_t | Inflated to ~150 rather than ~1: when the countermeasure is inactive a placeholder `gamma = 0.001` divides into R_t. This squashes the in-game chart (threshold line renders at ~0.7% height), always reports "GROWTH", and makes the reported "R_t reduction" an artifact | open |
+| R_t | Inflated to ~150 rather than ~1: when the countermeasure is inactive a placeholder `gamma = 0.001` divides into R_t. This squashed the in-game chart (threshold line rendered at ~0.7% height), always reported "GROWTH", and made the reported "R_t reduction" an artifact | **fixed** |
 | Balance | The 90% loss condition is unreachable — corrections cap at 12%/tick against 5%/tick waning, so corrected population plateaus near 50% | open |
 | Balance | The default scenario on the Nepal map never terminates — it reaches neither condition and runs indefinitely | open |
 | Balance | The earthquake scenario on Nepal reaches the 75% win in ~15 ticks, so the most expensive ability is barely affordable in a winning run | open |
@@ -279,6 +322,7 @@ were addressed in the audit-fix pass and are recorded here only for the record.
 5. Kermack, W. O., & McKendrick, A. G. (1927). A contribution to the mathematical theory of epidemics. *Proceedings of the Royal Society A*, 115(772), 700–721.
 6. Pennycook, G., & Rand, D. G. (2022). Accuracy prompts are a replicable and generalizable approach for reducing the spread of misinformation. *Nature Communications*.
 7. Flynn, D. J., Nyhan, B., & Reifler, J. (2017). The nature and origins of misperceptions. *Political Psychology*, 38(S1).
+8. Cori, A., Ferguson, N. M., Fraser, C., & Cauchemez, S. (2013). A new framework and software to estimate time-varying reproduction numbers during epidemics. *American Journal of Epidemiology*, 178(9), 1505–1512.
 
 ---
 
@@ -292,7 +336,7 @@ controller/    game_engine.py (tick, telemetry, abilities)
 model/         world_graph  region  platform_node  info_strain  trait
                countermeasure  scenarios  world_map_data  real_world_data
                csv_loader  geo_data
-algorithm/     spread_model (SIR, SEIR)  counter_ai  strike_manager
-               export_report_figures  graph_traversal
+algorithm/     spread_model (SIR, SEIR)  reproduction_number (renewal R_t)
+               counter_ai  strike_manager  export_report_figures  graph_traversal
 data/          geo/ (map JSON)  something/ (legacy, orphaned)
 ```
