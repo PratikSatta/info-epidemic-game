@@ -1,4 +1,7 @@
-class Region:
+from model.effect import EffectHost
+
+
+class Region(EffectHost):
     node_type: str = "geographic"   # overridden by PlatformNode subclasses
 
     def __init__(self, name: str, population: int, x: int, y: int,
@@ -17,6 +20,19 @@ class Region:
         self.skeptical = 0
 
         self.connections: dict["Region", float] = {}   # neighbor -> edge weight (0-1)
+        self._init_effects()                           # temporary region-scoped modifiers
+
+    # ---- Temporary region-scoped modifiers (tactical abilities) ----
+    @property
+    def believability_multiplier(self) -> float:
+        """
+        Multiplier on this region's INTERNAL exposure rate, from temporary
+        region-scoped abilities (Echo Chamber Silo). 1.0 = no effect, which is
+        the default for every region with nothing active on it. This applies
+        only to within-region spread, not to cross-edge arrivals from
+        neighbours -- the ability is advertised as an internal boost.
+        """
+        return max(0.0, 1.0 + self.temp_delta("region_believability"))
 
     # ---- Correction-resistance hook (overridden by PlatformNode) ----
     @property

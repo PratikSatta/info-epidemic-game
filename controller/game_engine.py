@@ -2,6 +2,7 @@ from model.world_graph import WorldGraph
 from model.info_strain import InfoStrain
 from model.countermeasure import CounterMeasure
 from model.trait import Trait
+from model.effect import ActiveEffect
 from algorithm.spread_model import SpreadAlgorithm
 from algorithm.counter_ai import CounterAI
 from algorithm.strike_manager import StrikeManager
@@ -31,6 +32,9 @@ class GameEngine:
         self.state = GameState.RUNNING
         self.current_ai_focus = None
         self.last_strike_result = None
+        # Signals that expired on the most recent tick, so the UI can announce
+        # e.g. "Bot Amplification Surge has ended" without re-deriving them.
+        self.last_expired_effects: list = []
 
         # Time-series telemetry for real-time analytics & academic report export
         self.telemetry_history: list[dict] = []
@@ -70,7 +74,7 @@ class GameEngine:
              selection, since the AI may be "watching" one region while a
              strike is queued on another.
           5. Award upgrade points to the player, respecting InfoStrain's cap.
-          6. Count down active ability cooldowns.
+          6. Count down ability cooldowns and expire timed ability effects.
           7. Record telemetry snapshot for analytics & academic report export.
           8. Re-check win/loss conditions.
         """
@@ -106,6 +110,14 @@ class GameEngine:
             if self.active_abilities[ability_key]["cooldown"] > 0:
                 self.active_abilities[ability_key]["cooldown"] -= 1
 
+        # Expire any tactical-ability modifiers whose duration has run out.
+        # Kept deliberately separate from the cooldown countdown above: the
+        # cooldown gates when an ability may be cast again, the duration governs
+        # how long its effect lasts. Nothing tracked the latter before, which is
+        # why Bot Surge's advertised "3 turns" was silently permanent.
+        self.last_expired_effects = self.strain.tick_effects()
+        self.last_expired_effects.extend(self.world.tick_region_effects())
+
         self.tick_count += 1
         self._record_telemetry()
         self._check_game_over()
@@ -129,8 +141,9 @@ class GameEngine:
         total_s = total_n - total_b - total_e - total_k
 
         # Effective reproduction number: R_t = (beta / gamma) * (S / N)
-        # Using strain transmission_rate as beta, counter strength as gamma proxy
-        beta = self.strain.transmission_rate
+        # beta is the EFFECTIVE transmission rate, so an active tactical boost
+        # is reflected in the reported R_t rather than being invisible to it.
+        beta = self.strain.effective_transmission_rate
         gamma = self.counter.effective_strength_against(self.strain) if self.counter.active else 0.001
         r_t = (beta / gamma) * (total_s / max(1, total_n))
 
@@ -145,11 +158,17 @@ class GameEngine:
             "counter_active": self.counter.active,
         })
 
-    def use_tactical_ability(self, ability_name: str, target_region_name: str = None,
-                            target_platform: str = None) -> dict:
+    def use_tactical_ability(self, ability_name: str,
+                            target_region_name: str = None) -> dict:
         """
         Player-facing tactical abilities with cooldowns and point costs.
         Returns {"success": bool, "message": str, "effect": dict}.
+
+        Effects are registered as timed ActiveEffect modifiers (see
+        model/effect.py) rather than applied by mutating the strain directly.
+        That is what makes every ability expire on schedule, and what stops a
+        temporary boost from leaking permanently into the trait-driven base
+        values.
         """
         if ability_name not in self.active_abilities:
             return {"success": False, "message": "Unknown ability.", "effect": {}}
@@ -169,33 +188,56 @@ class GameEngine:
                 "effect": {}
             }
 
+        # Validate the target BEFORE any points are charged, so a missing or
+        # unknown region costs the player nothing.
+        target_region = None
+        if ability_name == "echo_chamber":
+            if not target_region_name:
+                return {"success": False, "message": "Requires target region.", "effect": {}}
+            target_region = self.world.get_region(target_region_name)
+            if target_region is None:
+                return {"success": False, "message": "Region not found.", "effect": {}}
+
         # Execute ability
         effect = {}
         if ability_name == "bot_surge":
-            # Bot Amplification Surge: +30% transmission rate for 3 turns globally
-            effect = {"type": "global_transmission_boost", "magnitude": 0.30, "duration": 3}
-            self.strain.transmission_rate *= 1.30
+            # Bot Amplification Surge: +30% of the current permanent
+            # transmission rate, for 3 turns. Stored as a fixed additive delta
+            # computed once here, so expiry restores the exact prior value and
+            # repeated casts cannot compound.
+            delta = self.strain.transmission_rate * 0.30
+            self.strain.add_effect(ActiveEffect(
+                source="bot_surge", attr="transmission_rate", delta=delta,
+                duration=3, label="Bot Amplification Surge",
+            ))
+            effect = {"type": "global_transmission_boost", "delta": round(delta, 4),
+                      "duration": 3}
 
         elif ability_name == "echo_chamber":
-            # Echo Chamber Silo: Targeted region gains +50% internal spread for 4 turns
-            if not target_region_name:
-                return {"success": False, "message": "Requires target region.", "effect": {}}
-            region = self.world.get_region(target_region_name)
-            if not region:
-                return {"success": False, "message": "Region not found.", "effect": {}}
-            effect = {"type": "region_believability_boost", "target": target_region_name,
-                     "magnitude": 0.50, "duration": 4}
+            # Echo Chamber Silo: +50% internal believability in the chosen
+            # region for 4 turns. Applies to that region's within-region spread
+            # only (region.believability_multiplier), not to arrivals over an
+            # edge from a neighbour.
+            target_region.add_effect(ActiveEffect(
+                source="echo_chamber", attr="region_believability", delta=0.50,
+                duration=4, target=target_region.name, label="Echo Chamber Silo",
+            ))
+            effect = {"type": "region_believability_boost", "target": target_region.name,
+                      "magnitude": 0.50, "duration": 4}
 
         elif ability_name == "sensationalist_blitz":
-            # Sensationalist Blitz: Immediate +10% conversion across all regions with believers
+            # Sensationalist Blitz: immediate conversion of 10% of the
+            # Susceptible population in every region that already has
+            # believers. Routed through the active spread model, so these people
+            # land in whichever compartment that model uses for a fresh
+            # encounter -- Believing under SIR, Exposed under SEIR.
             converted = 0
             for region in self.world.regions:
-                if region.believing > 0:
-                    boost = int(region.susceptible * 0.10)
-                    boost = min(boost, region.susceptible)
-                    if boost > 0:
-                        region.expose(boost)
-                        converted += boost
+                if region.believing > 0 and region.susceptible > 0:
+                    amount = int(region.susceptible * 0.10)
+                    if amount > 0:
+                        self.spread_algo.inject_exposure(region, amount)
+                        converted += amount
             effect = {"type": "instant_conversion", "total_converted": converted}
 
         # Deduct cost and set cooldown

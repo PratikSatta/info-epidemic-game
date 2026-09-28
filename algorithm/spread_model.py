@@ -9,6 +9,21 @@ class SpreadAlgorithm(ABC):
     def tick(self, world: WorldGraph, strain: InfoStrain, counter: CounterMeasure) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    def inject_exposure(self, region, amount: int) -> None:
+        """
+        Force `amount` Susceptible people in `region` into contact with the
+        strain right now, routed through THIS model's own first transition.
+
+        Tactical abilities need to inject belief instantly, but "instantly
+        believing" means different compartments depending on the model: SIR
+        sends them straight to Believing, while SEIR sends them to Exposed,
+        where they still face the normal incubation delay. Hardcoding either
+        one (as an earlier version did with region.expose()) silently bypasses
+        the latency stage the SEIR model exists to represent.
+        """
+        raise NotImplementedError
+
 
 class SIRSpreadModel(SpreadAlgorithm):
     def __init__(self):
@@ -63,7 +78,13 @@ class SIRSpreadModel(SpreadAlgorithm):
         for region in world.regions:
             # --- New believers from within-region spread ---
             if region.believing > 0 and region.susceptible > 0:
-                internal_exposure_rate = strain.believability_rate * (region.believing / region.population)
+                # effective_* rather than the raw rates: these fold in any
+                # temporary tactical-ability modifiers on top of the permanent
+                # trait-driven values (see model/effect.py). believability_multiplier
+                # is 1.0 unless Echo Chamber is active on this region.
+                internal_exposure_rate = (strain.effective_believability_rate
+                                          * region.believability_multiplier
+                                          * (region.believing / region.population))
                 new_from_internal = region.susceptible * internal_exposure_rate
             else:
                 new_from_internal = 0.0
@@ -74,7 +95,7 @@ class SIRSpreadModel(SpreadAlgorithm):
                 if neighbor.believing == 0:
                     continue
                 effective_weight = min(1.0, weight + strain.edge_weight_bonus)
-                spread_chance = strain.transmission_rate * effective_weight
+                spread_chance = strain.effective_transmission_rate * effective_weight
                 neighbor_pressure = neighbor.believing / neighbor.population
                 new_from_neighbors += region.susceptible * spread_chance * neighbor_pressure
 
@@ -124,6 +145,10 @@ class SIRSpreadModel(SpreadAlgorithm):
                     region.skeptical -= waned
                     region.susceptible += waned
 
+    def inject_exposure(self, region, amount: int) -> None:
+        """SIR has no latency stage, so a forced encounter lands straight in Believing."""
+        region.expose(amount)
+
 
 class SEIRSpreadModel(SpreadAlgorithm):
     """
@@ -168,7 +193,13 @@ class SEIRSpreadModel(SpreadAlgorithm):
             # lands in `exposed` instead of `believing` -- this is the only
             # structural difference at this stage.
             if region.believing > 0 and region.susceptible > 0:
-                internal_exposure_rate = strain.believability_rate * (region.believing / region.population)
+                # effective_* rather than the raw rates: these fold in any
+                # temporary tactical-ability modifiers on top of the permanent
+                # trait-driven values (see model/effect.py). believability_multiplier
+                # is 1.0 unless Echo Chamber is active on this region.
+                internal_exposure_rate = (strain.effective_believability_rate
+                                          * region.believability_multiplier
+                                          * (region.believing / region.population))
                 new_from_internal = region.susceptible * internal_exposure_rate
             else:
                 new_from_internal = 0.0
@@ -178,7 +209,7 @@ class SEIRSpreadModel(SpreadAlgorithm):
                 if neighbor.believing == 0:
                     continue
                 effective_weight = min(1.0, weight + strain.edge_weight_bonus)
-                spread_chance = strain.transmission_rate * effective_weight
+                spread_chance = strain.effective_transmission_rate * effective_weight
                 neighbor_pressure = neighbor.believing / neighbor.population
                 new_from_neighbors += region.susceptible * spread_chance * neighbor_pressure
 
@@ -233,3 +264,9 @@ class SEIRSpreadModel(SpreadAlgorithm):
                 if waned > 0:
                     region.skeptical -= waned
                     region.susceptible += waned
+
+    def inject_exposure(self, region, amount: int) -> None:
+        """A forced encounter still has to pass through the latency stage: the
+        people land in Exposed and become Believing at the normal incubation
+        rate, so Sensationalist Blitz cannot shortcut the SEIR structure."""
+        region.move_to_exposed(amount)

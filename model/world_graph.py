@@ -27,6 +27,18 @@ class WorldGraph:
     def total_skeptical(self) -> int:
         return sum(r.skeptical for r in self.regions)
 
+    def tick_region_effects(self) -> list:
+        """
+        Advance every region's temporary modifiers by one tick, returning the
+        ones that expired this tick. Region-scoped tactical abilities (Echo
+        Chamber) live on the region they were cast on, so the engine ticks them
+        all in one place here rather than reaching into regions itself.
+        """
+        expired = []
+        for region in self.regions:
+            expired.extend(region.tick_effects())
+        return expired
+
     def global_infection_ratio(self) -> float:
         total_pop = self.total_population()
         return self.total_believing() / total_pop if total_pop else 0.0

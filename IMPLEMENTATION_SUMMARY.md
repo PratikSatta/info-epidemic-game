@@ -138,16 +138,40 @@ and so brings fact-checkers in *sooner*.
 
 ### Tactical abilities
 
-Three player-activated powers with point costs and cooldowns:
+Three player-activated powers with point costs and cooldowns. All three are
+implemented and verified working:
 
-| Ability | Cost | Cooldown | Intended effect |
+| Ability | Cost | Cooldown | Effect |
 |---|---|---|---|
 | Bot Amplification Surge | 15 | 8 | +30% global transmission for 3 turns |
-| Echo Chamber Silo | 20 | 10 | +50% believability in a selected region for 4 turns |
-| Sensationalist Blitz | 12 | 6 | Immediate +10% conversion in every region with believers |
+| Echo Chamber Silo | 20 | 10 | +50% internal believability in a selected region for 4 turns |
+| Sensationalist Blitz | 12 | 6 | Immediate conversion of 10% of Susceptible in every region that has believers |
 
-**Status: broken.** See Known gaps — two of the three do not do what the table
-says.
+Temporary effects live in `model/effect.py`, deliberately separate from the
+permanent trait system. Traits mutate the strain's base rates additively and
+never revert — correct for a permanent upgrade the player has paid for.
+Abilities are the opposite: they must expire, so they are stored as tick-counted
+`ActiveEffect` modifiers. `effective_transmission_rate` and
+`effective_believability_rate` on the strain (and `believability_multiplier` on
+a region) fold the active modifiers on top of the permanent value. The spread
+model and telemetry read the **effective** values; the trait UI reads the
+permanent ones.
+
+That separation matters more than it looks. If the getter folded temporary
+bonuses in, then buying a trait *during* an ability would permanently bake the
+bonus into the base value — which is exactly how Bot Amplification Surge
+previously became a permanent, compounding +30%. Modifiers are stored as fixed
+additive deltas computed once at cast time, so expiry restores the exact prior
+value with no floating-point drift, and a second cast cannot compound on the
+first.
+
+Sensationalist Blitz routes through `SpreadAlgorithm.inject_exposure()`, so a
+forced encounter lands in whichever compartment the active model uses for one:
+Believing under SIR, Exposed under SEIR — where those people still face the
+normal incubation delay rather than bypassing it.
+
+Expired effects are collected on `GameEngine.last_expired_effects` each tick so
+the UI can announce when a boost has lapsed.
 
 ### Points
 
@@ -213,10 +237,10 @@ were addressed in the audit-fix pass and are recorded here only for the record.
 
 | Area | Issue | Status |
 |---|---|---|
-| Tactical abilities | `echo_chamber` has no effect at all — it builds a description dict and never mutates any state, but still charges 20 points and sets a 10-turn cooldown | open |
-| Tactical abilities | `bot_surge` multiplies transmission permanently and compounding — the documented 3-turn duration is never enforced | open |
-| Tactical abilities | `sensationalist_blitz` works, but in SEIR mode injects straight into Believing, skipping the Exposed latency stage | open |
-| Tactical abilities | No timed-effect system exists at all, which is the root cause of the first two | open |
+| Tactical abilities | `echo_chamber` had no effect at all — it built a description dict and never mutated any state, while still charging 20 points and setting a 10-turn cooldown | **fixed** |
+| Tactical abilities | `bot_surge` multiplied transmission permanently and compounding; the documented 3-turn duration was never enforced | **fixed** |
+| Tactical abilities | `sensationalist_blitz` injected straight into Believing in SEIR mode, skipping the Exposed latency stage | **fixed** |
+| Tactical abilities | No timed-effect system existed at all, which was the root cause of the above | **fixed** |
 | R_t | Inflated to ~150 rather than ~1: when the countermeasure is inactive a placeholder `gamma = 0.001` divides into R_t. This squashes the in-game chart (threshold line renders at ~0.7% height), always reports "GROWTH", and makes the reported "R_t reduction" an artifact | open |
 | Balance | The 90% loss condition is unreachable — corrections cap at 12%/tick against 5%/tick waning, so corrected population plateaus near 50% | open |
 | Balance | The default scenario on the Nepal map never terminates — it reaches neither condition and runs indefinitely | open |
