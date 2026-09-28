@@ -2,6 +2,14 @@ import sys
 import os
 import pygame
 
+# Support both `python view/main.py` and `python -m view.main`. When run as a
+# script, sys.path[0] is this file's own directory (view/), not the repository
+# root, so the model/algorithm/controller packages would not be importable and
+# the game would die with ModuleNotFoundError before it ever reaches main().
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 from model.region import Region
 from model.world_graph import WorldGraph
 from model.countermeasure import CounterMeasure

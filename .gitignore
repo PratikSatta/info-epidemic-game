@@ -1,0 +1,16 @@
+# Compiled Python bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.venv/
+
+# Generated academic report exports (created at runtime by the [E] key)
+report_exports/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
