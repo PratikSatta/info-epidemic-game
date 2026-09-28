@@ -16,7 +16,7 @@ class GameState:
 class GameEngine:
     def __init__(self, world: WorldGraph, strain: InfoStrain, counter: CounterMeasure,
                  spread_algo: SpreadAlgorithm, counter_ai: CounterAI,
-                 activation_threshold: float = 0.10, points_per_tick: int = 1):
+                 activation_threshold: float = 0.20, points_per_tick: int = 1):
         self.world = world
         self.strain = strain
         self.counter = counter
@@ -31,6 +31,16 @@ class GameEngine:
         self.state = GameState.RUNNING
         self.current_ai_focus = None
         self.last_strike_result = None
+
+        # Time-series telemetry for real-time analytics & academic report export
+        self.telemetry_history: list[dict] = []
+
+        # Active Tactical Powers state
+        self.active_abilities: dict[str, dict] = {
+            "bot_surge": {"cooldown": 0, "cost": 15, "cooldown_max": 8},
+            "echo_chamber": {"cooldown": 0, "cost": 20, "cooldown_max": 10},
+            "sensationalist_blitz": {"cooldown": 0, "cost": 12, "cooldown_max": 6},
+        }
 
     def start(self, seed_region_name: str, seed_amount: int = 5) -> None:
         """Seed the initial outbreak in a chosen region."""
@@ -60,7 +70,9 @@ class GameEngine:
              selection, since the AI may be "watching" one region while a
              strike is queued on another.
           5. Award upgrade points to the player, respecting InfoStrain's cap.
-          6. Re-check win/loss conditions.
+          6. Count down active ability cooldowns.
+          7. Record telemetry snapshot for analytics & academic report export.
+          8. Re-check win/loss conditions.
         """
         if self.state != GameState.RUNNING:
             return
@@ -88,8 +100,14 @@ class GameEngine:
         self.current_ai_focus = self.counter_ai.choose_target(self.world) if self.counter.active else None
 
         self.strain.award_points(self.points_per_tick)
-        self.tick_count += 1
 
+        # Count down active ability cooldowns
+        for ability_key in self.active_abilities:
+            if self.active_abilities[ability_key]["cooldown"] > 0:
+                self.active_abilities[ability_key]["cooldown"] -= 1
+
+        self.tick_count += 1
+        self._record_telemetry()
         self._check_game_over()
 
     def _check_game_over(self) -> None:
@@ -97,6 +115,98 @@ class GameEngine:
             self.state = GameState.WON
         elif self.world.is_world_corrected():
             self.state = GameState.LOST
+
+    def _record_telemetry(self) -> None:
+        """
+        Record a snapshot of the current simulation state for real-time analytics
+        display and academic report export. Computes $R_t$ (effective reproduction
+        number) at the current tick.
+        """
+        total_b = self.world.total_believing()
+        total_e = self.world.total_exposed()
+        total_k = self.world.total_skeptical()
+        total_n = self.world.total_population()
+        total_s = total_n - total_b - total_e - total_k
+
+        # Effective reproduction number: R_t = (beta / gamma) * (S / N)
+        # Using strain transmission_rate as beta, counter strength as gamma proxy
+        beta = self.strain.transmission_rate
+        gamma = self.counter.effective_strength_against(self.strain) if self.counter.active else 0.001
+        r_t = (beta / gamma) * (total_s / max(1, total_n))
+
+        self.telemetry_history.append({
+            "tick": self.tick_count,
+            "susceptible": total_s,
+            "exposed": total_e,
+            "believing": total_b,
+            "skeptical": total_k,
+            "population": total_n,
+            "r_t": round(r_t, 3),
+            "counter_active": self.counter.active,
+        })
+
+    def use_tactical_ability(self, ability_name: str, target_region_name: str = None,
+                            target_platform: str = None) -> dict:
+        """
+        Player-facing tactical abilities with cooldowns and point costs.
+        Returns {"success": bool, "message": str, "effect": dict}.
+        """
+        if ability_name not in self.active_abilities:
+            return {"success": False, "message": "Unknown ability.", "effect": {}}
+
+        ability = self.active_abilities[ability_name]
+        if ability["cooldown"] > 0:
+            return {
+                "success": False,
+                "message": f"On cooldown ({ability['cooldown']} turns remaining).",
+                "effect": {}
+            }
+
+        if self.strain.points_available < ability["cost"]:
+            return {
+                "success": False,
+                "message": f"Not enough points (need {ability['cost']}, have {self.strain.points_available}).",
+                "effect": {}
+            }
+
+        # Execute ability
+        effect = {}
+        if ability_name == "bot_surge":
+            # Bot Amplification Surge: +30% transmission rate for 3 turns globally
+            effect = {"type": "global_transmission_boost", "magnitude": 0.30, "duration": 3}
+            self.strain.transmission_rate *= 1.30
+
+        elif ability_name == "echo_chamber":
+            # Echo Chamber Silo: Targeted region gains +50% internal spread for 4 turns
+            if not target_region_name:
+                return {"success": False, "message": "Requires target region.", "effect": {}}
+            region = self.world.get_region(target_region_name)
+            if not region:
+                return {"success": False, "message": "Region not found.", "effect": {}}
+            effect = {"type": "region_believability_boost", "target": target_region_name,
+                     "magnitude": 0.50, "duration": 4}
+
+        elif ability_name == "sensationalist_blitz":
+            # Sensationalist Blitz: Immediate +10% conversion across all regions with believers
+            converted = 0
+            for region in self.world.regions:
+                if region.believing > 0:
+                    boost = int(region.susceptible * 0.10)
+                    boost = min(boost, region.susceptible)
+                    if boost > 0:
+                        region.expose(boost)
+                        converted += boost
+            effect = {"type": "instant_conversion", "total_converted": converted}
+
+        # Deduct cost and set cooldown
+        self.strain.points_available -= ability["cost"]
+        ability["cooldown"] = ability["cooldown_max"]
+
+        return {
+            "success": True,
+            "message": f"{ability_name} activated successfully!",
+            "effect": effect
+        }
 
     def is_running(self) -> bool:
         return self.state == GameState.RUNNING

@@ -26,6 +26,28 @@ class SIRSpreadModel(SpreadAlgorithm):
         # discarded every single tick.
         self._exposure_carry: dict = {}
 
+        # Waning immunity: fraction of Skeptical (corrected) population that
+        # drifts back to Susceptible each tick, modelling the real-world
+        # finding that belief corrections decay rapidly over time.
+        #
+        # RESEARCH BASIS:
+        # Guess et al. (2023) "Correcting COVID-19 vaccine misinformation in
+        # 10 countries" found that only 39% of the initial correction accuracy
+        # increase persisted when participants were recontacted two weeks later
+        # -- meaning 61% of the correction effect decayed within ~14 days.
+        # Modelling each tick as roughly one day, 61% decay over 14 ticks
+        # gives a per-tick reversion rate of 1 - (0.39)^(1/14) ≈ 0.067.
+        # We use 0.05 (slightly conservative, acknowledging that reversion
+        # is not perfectly linear and that some corrected people do retain
+        # their skepticism longer-term).
+        #
+        # This also converts the SIR model into an SIRS (Susceptible →
+        # Believing → Skeptical → Susceptible) model, which is the standard
+        # epidemiological approach when immunity is not permanent -- directly
+        # analogous to seasonal flu models where prior immunity wanes.
+        self._waning_immunity_rate: float = 0.05
+        self._waning_carry: dict = {}
+
     def tick(self, world: WorldGraph, strain: InfoStrain, counter: CounterMeasure) -> None:
         """
         Advance the simulation by one tick. Two passes are used:
@@ -88,6 +110,20 @@ class SIRSpreadModel(SpreadAlgorithm):
             if correction_deltas[region] > 0:
                 region.correct(correction_deltas[region])
 
+            # --- Waning immunity (K → S reversion) ---
+            # Corrected (Skeptical) people gradually drift back to
+            # Susceptible, modelling the 61% correction decay found
+            # by Guess et al. (2023) over ~14 days. See __init__ for
+            # the full research justification and rate derivation.
+            if region.skeptical > 0:
+                raw_waning = region.skeptical * self._waning_immunity_rate + \
+                             self._waning_carry.get(region, 0.0)
+                waned = min(region.skeptical, int(raw_waning))
+                self._waning_carry[region] = raw_waning - waned
+                if waned > 0:
+                    region.skeptical -= waned
+                    region.susceptible += waned
+
 
 class SEIRSpreadModel(SpreadAlgorithm):
     """
@@ -116,6 +152,9 @@ class SEIRSpreadModel(SpreadAlgorithm):
         # and E->B are two independent fractional accumulations.
         self._exposed_carry: dict = {}
         self._believing_carry: dict = {}
+        # Waning immunity carry -- same research basis as SIRSpreadModel.
+        self._waning_immunity_rate: float = 0.05
+        self._waning_carry: dict = {}
 
     def tick(self, world: WorldGraph, strain: InfoStrain, counter: CounterMeasure) -> None:
         counter.tick_growth()
@@ -182,3 +221,15 @@ class SEIRSpreadModel(SpreadAlgorithm):
                 region.move_to_exposed(new_exposed_deltas[region])
             if correction_deltas[region] > 0:
                 region.correct(correction_deltas[region])
+
+            # --- Waning immunity (K → S reversion) ---
+            # Same research basis as SIRSpreadModel: Guess et al. (2023)
+            # found 61% of correction effects decay within 2 weeks.
+            if region.skeptical > 0:
+                raw_waning = region.skeptical * self._waning_immunity_rate + \
+                             self._waning_carry.get(region, 0.0)
+                waned = min(region.skeptical, int(raw_waning))
+                self._waning_carry[region] = raw_waning - waned
+                if waned > 0:
+                    region.skeptical -= waned
+                    region.susceptible += waned

@@ -1,4 +1,3 @@
-
 from model.trait import Trait
 
 

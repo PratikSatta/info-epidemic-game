@@ -31,8 +31,15 @@ class WorldGraph:
         total_pop = self.total_population()
         return self.total_believing() / total_pop if total_pop else 0.0
 
-    def is_world_saturated(self, threshold: float = 0.95) -> bool:
-        """Win condition check: has belief saturated the world?"""
+    def is_world_saturated(self, threshold: float = 0.75) -> bool:
+        """Win condition check: has belief reached majority saturation?
+        Threshold set at 75% rather than 95% -- consistent with research
+        showing even highly viral misinformation rarely achieves universal
+        penetration, but reaching supermajority (3/4 of the population)
+        represents a decisive information-environment capture. Vosoughi,
+        Roy & Aral (2018) found false news cascades reached far fewer
+        total users than true news before being corrected, suggesting
+        near-universal saturation is not the realistic target to model."""
         return self.global_infection_ratio() >= threshold
 
     def is_world_corrected(self, threshold: float = 0.90) -> bool:

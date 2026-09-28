@@ -19,26 +19,21 @@ from controller.game_engine import GameEngine, GameState
 from view import theme
 from view.geo_map_view import GeoMapView
 from view.map_view import MapView
-from view.ui_panels import StatsPanel, TraitPanel, NewsTicker, RaceBar, AdvanceButton, RegionDetailPanel, StrikeWarningPanel, EffectsLayer
+from view.ui_panels import (
+    StatsPanel, TraitPanel, NewsTicker, RaceBar, AdvanceButton,
+    RegionDetailPanel, StrikeWarningPanel, EffectsLayer
+)
+from view.analytics_modal import AnalyticsModal
+from view.tactical_abilities_panel import TacticalAbilitiesPanel
 
 
 STATE_MENU = "menu"
 STATE_PLAYING = "playing"
 STATE_GAME_OVER = "game_over"
 
-# Well-known paths checked at startup for "bring your own data" CSV files.
-# If present, the menu offers to load them via key 4 (see App._build_game
-# and App.handle_events). Edit these paths, or just replace the files at
-# these locations, to point at your own data without touching any code.
 CUSTOM_REGIONS_CSV_PATH = "data/regions_example.csv"
 CUSTOM_STRAIN_CSV_PATH = "data/strain_config_example.csv"
 
-# Educational layer: standard media-literacy guidance consistent with
-# practices used by IFCN-aligned fact-checking organizations (e.g. South
-# Asia Check, Nepal's own IFCN-certified fact-checker). These are general,
-# widely-taught verification habits, not paraphrased from any single
-# article -- shown after every round to give the simulation a genuine
-# public-education purpose alongside the academic/algorithmic one.
 MEDIA_LITERACY_TIPS = [
     "Check who is sharing the claim, not just what it says — is the source identifiable and credible?",
     "Slow down before resharing during emergencies — disaster-context rumors spread fastest and verify slowest.",
@@ -48,21 +43,6 @@ MEDIA_LITERACY_TIPS = [
 
 
 def build_world() -> WorldGraph:
-    """
-    Builds the starting map from real Nepal provincial data (see
-    model/real_world_data.py for sources and citations) rather than
-    arbitrary placeholder values. Each of Nepal's 7 actual provinces
-    becomes a Region, with population and base_resistance derived from
-    real internet-access statistics. Connections mirror Nepal's actual
-    province adjacency (a province only connects to provinces it
-    genuinely borders), so the graph itself -- not just the node values --
-    reflects something real.
-
-    Edge weights are still a modeling choice (no single sourced "rumor
-    transmission strength between province X and Y" statistic exists),
-    so they're estimated based on relative population/connectivity as a
-    reasonable proxy and should be named as an assumption in your report.
-    """
     world = WorldGraph()
     layout = build_province_layout()
 
@@ -77,12 +57,6 @@ def build_world() -> WorldGraph:
         )
         world.add_region(regions[province])
 
-    # Real adjacency: Nepal's 7 provinces border each other roughly west to
-    # east as: Sudurpashchim - Karnali - Lumbini - Gandaki - Bagmati -
-    # Madhesh/Koshi, with Madhesh bordering both Lumbini, Bagmati and Koshi
-    # along the southern plains, and Koshi bordering both Bagmati and
-    # Madhesh in the east. Edge weights are an estimated connectivity proxy
-    # (higher = stronger assumed information flow), not a sourced figure.
     regions["Sudurpashchim"].connect(regions["Karnali"], 0.5)
     regions["Karnali"].connect(regions["Lumbini"], 0.4)
     regions["Karnali"].connect(regions["Gandaki"], 0.3)
@@ -103,8 +77,12 @@ def build_trait_catalog() -> list:
 class App:
     def __init__(self):
         pygame.init()
-        pygame.display.set_caption("InfoSpread Simulator")
-        self.screen = pygame.display.set_mode((theme.WINDOW_WIDTH, theme.WINDOW_HEIGHT))
+        pygame.display.set_caption("InfoSpread Simulator - Tactical Command")
+
+        # Start in windowed mode with resizable window
+        self.windowed_size = (theme.DEFAULT_WINDOW_WIDTH, theme.DEFAULT_WINDOW_HEIGHT)
+        self.screen = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
+        self.fullscreen = False
         self.clock = pygame.time.Clock()
 
         self.font_title = pygame.font.SysFont(theme.FONT_NAME, theme.FONT_SIZE_TITLE, bold=True)
@@ -113,28 +91,120 @@ class App:
         self.font_small = pygame.font.SysFont(theme.FONT_NAME, theme.FONT_SIZE_SMALL)
 
         self.state = STATE_MENU
-        self.selected_model_name = "SIR"   # default; changed via menu key press
-        self.selected_scenario_name = "default"   # default; changed via menu key press
-        self.use_custom_data = False   # default; toggled via menu key press
-        self.selected_map_name = "nepal"   # "nepal" or "world"; toggled via menu key press
+        self.selected_model_name = "SIR"
+        self.selected_scenario_name = "default"
+        self.use_custom_data = False
+        self.selected_map_name = "nepal"
         self.custom_data_available = (
             os.path.exists(CUSTOM_REGIONS_CSV_PATH) and os.path.exists(CUSTOM_STRAIN_CSV_PATH)
         )
-        # NOTE: there is deliberately NO pygame.time.set_timer() here anymore.
-        # The simulation used to advance automatically every 600ms regardless
-        # of what the player did, which made the game play itself rather than
-        # respond to the player -- the single biggest piece of feedback that
-        # drove this rework. Now nothing advances until the player explicitly
-        # clicks the AdvanceButton or presses Space/Enter (see handle_events).
-        self.selected_region = None   # last region the player clicked, shown in RegionDetailPanel
-        self.hovered_region = None     # region currently under the mouse, for hover feedback
-        self.effects = EffectsLayer(self.font_small)   # juice layer: ring pulses + floating text for
-                                                          # player actions and game events (see ui_panels.py)
+
+        self.selected_region = None
+        self.hovered_region = None
+        self.effects = EffectsLayer(self.font_small)
 
         self._build_game()
+        self._rebuild_layout()
+
+    def _get_current_window_size(self) -> tuple[int, int]:
+        """Get current window dimensions."""
+        return self.screen.get_size()
+
+    def _rebuild_layout(self) -> None:
+        """Rebuild all UI panel rectangles based on current window size."""
+        w, h = self._get_current_window_size()
+
+        # Update theme dimensions
+        theme.WINDOW_WIDTH = w
+        theme.WINDOW_HEIGHT = h
+
+        # Responsive margins - scale with window size
+        margin = max(12, int(w * 0.012))  # 1.2% margin, min 12px
+
+        # Left panel width (map area) - 60% of window width
+        left_w = int(w * 0.60)
+
+        # Right panel width - remaining space minus margins
+        right_w = w - left_w - margin * 3
+
+        # Menu clickable option rects (rebuilt for menu state)
+        self.opt_rect_model = pygame.Rect(w // 2 - 380, int(h * 0.18), 360, 52)
+        self.opt_rect_scenario = pygame.Rect(w // 2 + 20, int(h * 0.18), 360, 52)
+        self.opt_rect_map = pygame.Rect(w // 2 - 380, int(h * 0.25), 360, 52)
+        self.opt_rect_data = pygame.Rect(w // 2 + 20, int(h * 0.25), 360, 52)
+        self.btn_launch_menu = pygame.Rect(w // 2 - 180, int(h * 0.33), 360, 56)
+        self.btn_play_again = pygame.Rect(w // 2 - 140, int(h * 0.68), 280, 48)
+
+        # Playing state layout - MUCH MORE SPACE FOR ABILITIES AND TRAITS
+        # Top section
+        race_bar_h = max(50, int(h * 0.065))  # Race bar
+        map_top = margin * 2 + race_bar_h
+        strike_h = max(80, int(h * 0.10))  # Strike panel at bottom
+        map_h = h - map_top - strike_h - margin * 2  # Map fills the rest
+
+        race_bar_rect = pygame.Rect(margin, margin, left_w, race_bar_h)
+        map_rect = pygame.Rect(margin, map_top, left_w, map_h)
+        strike_rect = pygame.Rect(margin, map_rect.bottom + margin, left_w, strike_h)
+
+        # Right panel heights - GENEROUS SIZING
+        right_x = left_w + margin * 2
+        current_y = margin
+
+        # Stats panel - compact
+        stats_h = max(100, int(h * 0.12))
+        stats_rect = pygame.Rect(right_x, current_y, right_w, stats_h)
+        current_y = stats_rect.bottom + margin
+
+        # Detail panel - medium
+        detail_h = max(120, int(h * 0.14))
+        detail_rect = pygame.Rect(right_x, current_y, right_w, detail_h)
+        current_y = detail_rect.bottom + margin
+
+        # Tactical Abilities - LARGE (3 buttons stacked vertically with room to breathe)
+        abilities_h = max(180, int(h * 0.20))
+        abilities_rect = pygame.Rect(right_x, current_y, right_w, abilities_h)
+        current_y = abilities_rect.bottom + margin
+
+        # Trait Evolution - LARGE (4 trait cards with full visibility)
+        trait_h = max(200, int(h * 0.22))
+        trait_rect = pygame.Rect(right_x, current_y, right_w, trait_h)
+        current_y = trait_rect.bottom + margin
+
+        # News ticker - medium
+        news_h = max(100, int(h * 0.12))
+        news_rect = pygame.Rect(right_x, current_y, right_w, news_h)
+        current_y = news_rect.bottom + margin
+
+        # Advance button - use remaining space
+        advance_h = max(80, h - current_y - margin)
+        advance_rect = pygame.Rect(right_x, current_y, right_w, advance_h)
+
+        # Analytics Modal (86% of screen, centered)
+        modal_w = int(w * 0.86)
+        modal_h = int(h * 0.88)
+        modal_rect = pygame.Rect(
+            (w - modal_w) // 2,
+            (h - modal_h) // 2,
+            modal_w,
+            modal_h
+        )
+
+        # Rebuild all panels
+        self.race_bar = RaceBar(race_bar_rect, self.font_body, self.font_header)
+
+        if hasattr(self, 'map_view'):
+            self.map_view.rect = map_rect
+
+        self.strike_panel = StrikeWarningPanel(strike_rect, self.font_body, self.font_header)
+        self.stats_panel = StatsPanel(stats_rect, self.font_body, self.font_header)
+        self.detail_panel = RegionDetailPanel(detail_rect, self.font_body, self.font_header)
+        self.abilities_panel = TacticalAbilitiesPanel(abilities_rect, self.font_body, self.font_header)
+        self.trait_panel = TraitPanel(trait_rect, self.font_body, self.font_header, self.trait_catalog)
+        self.news_ticker = NewsTicker(news_rect, self.font_small)
+        self.advance_button = AdvanceButton(advance_rect, self.font_header)
+        self.analytics_modal = AnalyticsModal(modal_rect, self.font_body, self.font_header)
 
     def _build_default_world(self) -> WorldGraph:
-        """Returns either the Nepal province map or the 16-country + 4-platform world map, per selected_map_name."""
         if self.selected_map_name == "world":
             return build_global_world()
         return build_world()
@@ -149,9 +219,6 @@ class App:
                 self._pending_data_warnings = world_warnings + strain_warnings
                 self._using_custom_data_this_round = True
             except CSVLoadError as e:
-                # Fall back to the currently-selected built-in map rather than
-                # crashing -- a malformed CSV should degrade gracefully, not
-                # break the game.
                 self._pending_data_warnings = [f"Custom data failed to load ({e}); using built-in map instead."]
                 self.world = self._build_default_world()
                 strain_factory = earthquake_rumor_scenario if self.selected_scenario_name == "earthquake_2015" else default_unverified_rumor
@@ -177,61 +244,17 @@ class App:
         self.selected_region = None
         self.hovered_region = None
 
-        # Layout for the enlarged 1280x820 window: map takes the left ~800px,
-        # a right-hand column of fixed-height panels takes the remaining
-        # ~440px. The race bar sits above the map (full width) since it's
-        # the single most important glanceable stat and deserves top
-        # billing; the strike warning banner sits below the map (also full
-        # width) since it's the second most urgent thing to notice and
-        # deserves its own dedicated, hard-to-miss space rather than being
-        # squeezed into the sidebar.
-        race_bar_rect = pygame.Rect(20, 20, 800, 56)
-        map_rect = pygame.Rect(20, 88, 800, 612)
-        strike_rect = pygame.Rect(20, 712, 800, 88)
-
-        stats_rect = pygame.Rect(840, 20, 420, 130)
-        detail_rect = pygame.Rect(840, 158, 420, 150)
-        trait_rect = pygame.Rect(840, 316, 420, 230)
-        news_rect = pygame.Rect(840, 554, 420, 130)
-        advance_rect = pygame.Rect(840, 692, 420, 108)
-
-        self.race_bar = RaceBar(race_bar_rect, self.font_body, self.font_header)
-        # Custom CSV-loaded maps have no real geographic data (arbitrary
-        # region names, no matching country/district outlines), so they
-        # use the old abstract node-and-edge MapView as a fallback. The
-        # two BUILT-IN maps (Nepal, world) use the real-geography
-        # GeoMapView. This check must happen AFTER the custom-data load
-        # attempt above, since _using_custom_data_this_round reflects
-        # whether it actually succeeded (not just whether it was toggled).
+        # Map view setup
         if self._using_custom_data_this_round:
-            self.map_view = MapView(map_rect, self.font_body, self.font_small)
+            self.map_view = MapView(pygame.Rect(0, 0, 100, 100), self.font_body, self.font_small)
         else:
             if not isinstance(getattr(self, "map_view", None), GeoMapView):
-                self.map_view = GeoMapView(map_rect, self.font_body, self.font_small)
+                self.map_view = GeoMapView(pygame.Rect(0, 0, 100, 100), self.font_body, self.font_small)
             self.map_view.set_zoom(GeoMapView.ZOOM_NEPAL if self.selected_map_name == "nepal" else GeoMapView.ZOOM_WORLD)
-        self.strike_panel = StrikeWarningPanel(strike_rect, self.font_body, self.font_header)
-        self.stats_panel = StatsPanel(stats_rect, self.font_body, self.font_header)
-        self.detail_panel = RegionDetailPanel(detail_rect, self.font_body, self.font_header)
-        self.trait_panel = TraitPanel(trait_rect, self.font_body, self.font_header, self.trait_catalog)
-        self.news_ticker = NewsTicker(news_rect, self.font_small)
-        self.advance_button = AdvanceButton(advance_rect, self.font_header)
 
         self._seeded = False
-        self._last_state = GameState.RUNNING
 
     def _largest_region_name(self) -> str:
-        """
-        Seed region selection that works regardless of whether the world
-        came from the built-in Nepal map, the built-in world map, or an
-        arbitrary custom CSV: pick whichever GEOGRAPHIC region has the
-        largest population, falling back to the largest node of any type
-        only if no geographic regions exist at all. This avoids seeding
-        the very first outbreak directly in a platform/spread-point node
-        (which tend to have larger modeled "reach" pools than any single
-        country) -- outbreaks should start somewhere real and reach
-        platforms afterward, matching the Plague-Inc framing of a
-        geographic patient zero.
-        """
         geographic = [r for r in self.world.regions if getattr(r, "node_type", "geographic") == "geographic"]
         candidates = geographic if geographic else self.world.regions
         return max(candidates, key=lambda r: r.population).name
@@ -240,44 +263,24 @@ class App:
         seed_region = self._largest_region_name()
         self.engine.start(seed_region_name=seed_region, seed_amount=8)
         self.news_ticker.push(f"Rumor seeded in {seed_region}.")
-        for warning in self._pending_data_warnings[:3]:  # cap to avoid flooding the ticker
-            self.news_ticker.push(f"[data] {warning}")
+        for warning in self._pending_data_warnings[:3]:
+            self.news_ticker.push(f"[DATA] {warning}")
         self.selected_region = None
         self.hovered_region = None
         self._seeded = True
         self.state = STATE_PLAYING
 
     def _region_screen_pos(self, region):
-        """
-        Looks up where a region currently renders on screen, working with
-        EITHER map view class (GeoMapView's signature takes the world
-        graph too; the abstract MapView fallback for custom CSV data does
-        not). Returns None if the region isn't visible right now (e.g.
-        wrong zoom level) -- callers should skip the effect in that case
-        rather than guess a position.
-        """
         if isinstance(self.map_view, GeoMapView):
             return self.map_view.screen_pos(self.world, region)
         return self.map_view.screen_pos(region)
 
     def _advance_one_tick(self) -> None:
-        """
-        Advances the simulation by exactly one tick. This is now the ONLY
-        way the simulation moves forward -- called from the AdvanceButton
-        click handler or the Space/Enter keydown handler in handle_events.
-        There is no automatic timer; if the player does nothing, nothing
-        happens, which is the core fix for "the rumor spreads without any
-        player interactivity."
-        """
         if self.engine.state != GameState.RUNNING:
             return
         self.engine.tick()
         self._check_for_news_events()
 
-        # Visual feedback for landed strikes -- a strike is a dramatic
-        # game event (a chunk of believers corrected at once) and
-        # deserves a visible flash on the map itself, not just a panel/
-        # ticker update easy to miss while looking elsewhere.
         for result in self.engine.strike_manager.last_strike_results:
             region = self.world.get_region(result["region_name"])
             if region is None:
@@ -315,33 +318,105 @@ class App:
                     elif event.key == pygame.K_5:
                         self.selected_map_name = "world" if self.selected_map_name == "nepal" else "nepal"
                         self._build_game()
-                    else:
+                    elif event.key in (pygame.K_SPACE, pygame.K_RETURN):
                         self.start_game()
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                    self.start_game()
+                    pos = event.pos
+                    if self.opt_rect_model.collidepoint(pos):
+                        self.selected_model_name = "SEIR" if self.selected_model_name == "SIR" else "SIR"
+                        self._build_game()
+                    elif self.opt_rect_scenario.collidepoint(pos):
+                        self.selected_scenario_name = (
+                            "earthquake_2015" if self.selected_scenario_name == "default" else "default"
+                        )
+                        self._build_game()
+                    elif self.opt_rect_map.collidepoint(pos):
+                        self.selected_map_name = "world" if self.selected_map_name == "nepal" else "nepal"
+                        self._build_game()
+                    elif self.opt_rect_data.collidepoint(pos) and self.custom_data_available:
+                        self.use_custom_data = not self.use_custom_data
+                        self._build_game()
+                    elif self.btn_launch_menu.collidepoint(pos):
+                        self.start_game()
 
             elif self.state == STATE_PLAYING:
-                if event.type == pygame.KEYDOWN and event.key in (pygame.K_SPACE, pygame.K_RETURN):
-                    self._advance_one_tick()
+                # Analytics modal handling (highest priority for clicks)
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    if self.analytics_modal.handle_click(event.pos):
+                        continue
+
+                # Keyboard shortcuts
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_SPACE, pygame.K_RETURN):
+                        self._advance_one_tick()
+                    elif event.key == pygame.K_a:
+                        # Toggle analytics modal with 'A' key
+                        self.analytics_modal.toggle()
+                    elif event.key == pygame.K_e and self.engine.telemetry_history:
+                        # Export academic report with 'E' key
+                        self._export_academic_report()
+                    elif event.key == pygame.K_f or event.key == pygame.K_F11:
+                        # Toggle fullscreen with 'F' or F11
+                        self._toggle_fullscreen()
+                    elif event.key in (pygame.K_BACKSPACE, pygame.K_ESCAPE):
+                        if self.analytics_modal.visible:
+                            self.analytics_modal.visible = False
+                        elif isinstance(self.map_view, GeoMapView) and self.map_view.zoom_level == GeoMapView.ZOOM_NEPAL \
+                                and self.selected_map_name != "nepal":
+                            self.map_view.set_zoom(GeoMapView.ZOOM_WORLD)
+                            self.map_view.reset_zoom()
+                            self.selected_region = None
+
+                # Handle window resize
+                if event.type == pygame.VIDEORESIZE:
+                    if not self.fullscreen:
+                        self.windowed_size = (event.w, event.h)
+                    self._rebuild_layout()
 
                 if event.type == pygame.MOUSEMOTION:
                     self.hovered_region = self.map_view.region_at_point(self.world, event.pos)
                     self.advance_button.update_hover(event.pos)
+                    if isinstance(self.map_view, GeoMapView):
+                        self.map_view.handle_mousemove(event.pos)
 
-                if event.type == pygame.KEYDOWN and event.key in (pygame.K_BACKSPACE, pygame.K_ESCAPE):
-                    if isinstance(self.map_view, GeoMapView) and self.map_view.zoom_level == GeoMapView.ZOOM_NEPAL \
-                            and self.selected_map_name != "nepal":
-                        # Only zoom back out if we zoomed IN from the world
-                        # map -- if the player chose the Nepal map itself
-                        # from the menu, there is no "world" level above it.
-                        self.map_view.set_zoom(GeoMapView.ZOOM_WORLD)
-                        self.selected_region = None
+                if event.type == pygame.MOUSEWHEEL:
+                    mouse_pos = pygame.mouse.get_pos()
+                    # Try scrollable panels first
+                    if self.abilities_panel.handle_scroll(mouse_pos, event.y):
+                        continue
+                    if self.trait_panel.handle_scroll(mouse_pos, event.y):
+                        continue
+                    # Then map view
+                    if isinstance(self.map_view, GeoMapView):
+                        self.map_view.handle_scroll(mouse_pos, event.y)
+
+                if event.type == pygame.MOUSEBUTTONUP:
+                    if isinstance(self.map_view, GeoMapView):
+                        self.map_view.handle_mouseup()
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
+                    if isinstance(self.map_view, GeoMapView) and self.map_view.handle_mousedown(event.pos):
+                        continue
+
+                    if event.button in (2, 3) and isinstance(self.map_view, GeoMapView):
+                        self.map_view.handle_mousedown(event.pos)
+                        continue
+
                     if self.advance_button.is_clicked(event.pos):
                         self.effects.spawn_ring(self.advance_button.rect.center, theme.ACCENT_BRIGHT,
                                                  start_radius=8, end_radius=70, duration=0.35)
                         self._advance_one_tick()
+                        continue
+
+                    # Tactical abilities handling
+                    clicked_ability = self.abilities_panel.handle_click(event.pos)
+                    if clicked_ability is not None:
+                        result = self.engine.use_tactical_ability(clicked_ability, target_region_name=self.selected_region.name if self.selected_region else None)
+                        if result["success"]:
+                            self.news_ticker.push(f"[TACTICAL] {result['message']}")
+                            self.effects.spawn_text(event.pos, "ACTIVATED!", theme.ACCENT_BRIGHT, duration=1.2)
+                        else:
+                            self.news_ticker.push(f"[TACTICAL] {result['message']}")
                         continue
 
                     clicked_trait = self.trait_panel.handle_click(event.pos)
@@ -349,24 +424,15 @@ class App:
                         success = self.engine.attempt_trait_acquisition(clicked_trait)
                         if success:
                             new_level = self.strain.trait_level(clicked_trait)
-                            self.news_ticker.push(f"{clicked_trait.name} leveled up to Lv.{new_level}")
-                            # Floating "+1 Lv" feedback right where the player
-                            # clicked, plus a quick ring on the button itself --
-                            # a purchase should feel like it registered, not
-                            # just silently update a number in the panel below.
+                            self.news_ticker.push(f"[UPGRADE] {clicked_trait.name} reached Lv.{new_level}")
                             self.effects.spawn_text(event.pos, f"Lv.{new_level}!", theme.ACCENT_BRIGHT)
-                            for button, trait in self.trait_panel.buttons:
-                                if trait is clicked_trait:
+                            for button in self.trait_panel.buttons:
+                                if button.trait is clicked_trait:
                                     self.effects.spawn_ring(button.rect.center, theme.ACCENT,
                                                              start_radius=4, end_radius=50, duration=0.4)
                                     break
                         continue
 
-                    # Clicking Nepal specifically while at world zoom (and
-                    # the world map, not the Nepal-only map, is active)
-                    # zooms in to the district view instead of just
-                    # selecting it -- the geographic equivalent of
-                    # Plague-Inc-style "click a region to see more detail."
                     if (isinstance(self.map_view, GeoMapView)
                             and self.map_view.zoom_level == GeoMapView.ZOOM_WORLD
                             and self.map_view.country_at_point_is_nepal(event.pos)):
@@ -374,36 +440,62 @@ class App:
                         self.selected_region = self.world.get_region("Nepal")
                         continue
 
-                    # Clicking the map (and not a button) selects a region for
-                    # inspection in RegionDetailPanel -- pure information, no
-                    # simulation effect, addressing feedback that the map felt
-                    # like a static, unresponsive backdrop.
                     clicked_region = self.map_view.region_at_point(self.world, event.pos)
                     if clicked_region is not None:
                         self.selected_region = clicked_region
 
             elif self.state == STATE_GAME_OVER:
-                if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+                if event.type == pygame.KEYDOWN and event.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_ESCAPE):
                     self._build_game()
                     self.state = STATE_MENU
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if self.btn_play_again.collidepoint(event.pos):
+                        self._build_game()
+                        self.state = STATE_MENU
+
+    def _export_academic_report(self) -> None:
+        """Export academic report package for TU BCA final project."""
+        from algorithm.export_report_figures import export_academic_report
+
+        result = export_academic_report(
+            self.engine.telemetry_history,
+            self.strain.name,
+            self.selected_model_name,
+            output_dir="report_exports"
+        )
+
+        if result["success"]:
+            self.news_ticker.push(f"[EXPORT] Academic report exported to {result['output_dir']}")
+            self.news_ticker.push(f"[EXPORT] {len(result['files'])} files generated")
+        else:
+            self.news_ticker.push(f"[EXPORT] {result['message']}")
+
+    def _toggle_fullscreen(self) -> None:
+        """Toggle between fullscreen and windowed mode."""
+        self.fullscreen = not self.fullscreen
+
+        if self.fullscreen:
+            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self.screen = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
+
+        self._rebuild_layout()
+
+        if self.news_ticker:
+            mode_text = "fullscreen" if self.fullscreen else "windowed"
+            self.news_ticker.push(f"[DISPLAY] Switched to {mode_text} mode (F or F11 to toggle)")
 
     def _check_for_news_events(self) -> None:
         if self.counter.active and not getattr(self, "_announced_counter", False):
-            self.news_ticker.push("Fact-checkers have noticed the rumor.")
+            self.news_ticker.push("[FACT-CHECK] Fact-checkers have launched response.")
             self._announced_counter = True
         for region in self.world.regions:
             if region.skeptical > region.population * 0.5 and region.name not in getattr(self, "_announced_skeptical", set()):
                 if not hasattr(self, "_announced_skeptical"):
                     self._announced_skeptical = set()
                 self._announced_skeptical.add(region.name)
-                self.news_ticker.push(f"{region.name} is now majority skeptical.")
+                self.news_ticker.push(f"[RESISTANCE] {region.name} is now majority skeptical.")
 
-        # Strike telegraph announcements -- each newly-scheduled strike
-        # (one the ticker hasn't announced yet, tracked by region name in
-        # a SET now rather than a single value, since Crackdown can have
-        # several concurrent pending strikes) gets a one-time push; every
-        # landed strike always gets a push since last_strike_results only
-        # contains entries on the exact tick each one executes.
         if not hasattr(self, "_announced_strike_targets"):
             self._announced_strike_targets = set()
 
@@ -414,85 +506,89 @@ class App:
                 self._announced_strike_targets.add(warning["region_name"])
                 prefix = "[CRACKDOWN]" if self.engine.strike_manager.is_crackdown_active else "[ALERT]"
                 self.news_ticker.push(
-                    f"{prefix} Fact-checkers are mobilizing against {warning['region_name']} "
-                    f"— impact in {warning['turns_remaining']} turns."
+                    f"{prefix} Fact-checkers targeting {warning['region_name']} (in {warning['turns_remaining']} turns)"
                 )
-        # Drop announcement-tracking for any target that's no longer
-        # pending (it either landed or was otherwise cleared), so if the
-        # same region becomes a target again later it gets a fresh announcement.
         self._announced_strike_targets &= currently_pending_names
 
         for result in self.engine.strike_manager.last_strike_results:
             self.news_ticker.push(
-                f"Strike landed on {result['region_name']}: {result['removed']:,} corrected."
+                f"[STRIKE] Impact on {result['region_name']}: {result['removed']:,} corrected."
             )
 
     def draw_menu(self) -> None:
         self.screen.fill(theme.BG_COLOR)
-        title = self.font_title.render("InfoSpread Simulator", True, theme.TEXT_PRIMARY)
-        self.screen.blit(title, (theme.WINDOW_WIDTH // 2 - title.get_width() // 2, 70))
+        mouse_pos = pygame.mouse.get_pos()
 
-        # --- Settings panel: model / scenario / map / data source toggles ---
-        settings_rect = pygame.Rect(theme.WINDOW_WIDTH // 2 - 420, 140, 840, 190)
-        pygame.draw.rect(self.screen, theme.PANEL_BG, settings_rect, border_radius=12)
-        pygame.draw.rect(self.screen, theme.PANEL_BORDER, settings_rect, width=2, border_radius=12)
+        # Title Hero Banner
+        title_surf = self.font_title.render("INFOSPREAD SIMULATOR", True, theme.TEXT_HIGHLIGHT)
+        self.screen.blit(title_surf, (theme.WINDOW_WIDTH // 2 - title_surf.get_width() // 2, 45))
 
-        model_line = self.font_body.render(
-            f"Model: {self.selected_model_name}  —  press 1 for SIR, 2 for SEIR", True, theme.ACCENT
-        )
-        scenario_label = "2015 Earthquake Rumors (calibrated)" if self.selected_scenario_name == "earthquake_2015" else "Default (uncalibrated)"
-        scenario_line = self.font_body.render(
-            f"Scenario: {scenario_label}  —  press 3 to toggle", True, theme.ACCENT
-        )
-        builtin_map_label = "World Map (16 countries + 4 platforms)" if self.selected_map_name == "world" else "Nepal Provinces (7 regions)"
-        map_line = self.font_body.render(
-            f"Map: {builtin_map_label}  —  press 5 to toggle", True, theme.ACCENT
-        )
-        if self.custom_data_available:
-            data_label = "Custom CSV data" if self.use_custom_data else f"Built-in — {builtin_map_label}"
-            data_color = theme.ACCENT
-            data_text = f"Data source: {data_label}  —  press 4 to toggle"
-        else:
-            data_color = theme.TEXT_SECONDARY
-            data_text = "Data source: built-in map only (no custom CSV files found in data/)"
-        data_line = self.font_body.render(data_text, True, data_color)
+        sub_surf = self.font_body.render("Tactical Information Contagion & Fact-Checking Dynamics", True, theme.ACCENT)
+        self.screen.blit(sub_surf, (theme.WINDOW_WIDTH // 2 - sub_surf.get_width() // 2, 90))
 
-        for i, line in enumerate([model_line, scenario_line, map_line, data_line]):
-            self.screen.blit(line, (theme.WINDOW_WIDTH // 2 - line.get_width() // 2, 168 + i * 36))
+        # Main Settings Container
+        settings_rect = pygame.Rect(theme.WINDOW_WIDTH // 2 - 420, 135, 840, 240)
+        pygame.draw.rect(self.screen, theme.PANEL_BG, settings_rect, border_radius=14)
+        pygame.draw.rect(self.screen, theme.PANEL_BORDER, settings_rect, width=1, border_radius=14)
 
-        subtitle = self.font_body.render(
-            "Click anywhere or press Space to seed the rumor and begin", True, theme.TEXT_SECONDARY
-        )
-        self.screen.blit(subtitle, (theme.WINDOW_WIDTH // 2 - subtitle.get_width() // 2, 350))
+        # Draw Option Cards (Clickable)
+        opts = [
+            (self.opt_rect_model, "🔬 Spread Model", f"{self.selected_model_name} (SIR / SEIR)", "Press 1 or 2"),
+            (self.opt_rect_scenario, "📋 Scenario", "2015 Earthquake" if self.selected_scenario_name == "earthquake_2015" else "Default Rumor", "Press 3"),
+            (self.opt_rect_map, "🗺️ Simulation Map", "World (202 Nations)" if self.selected_map_name == "world" else "Nepal (7 Provinces)", "Press 5"),
+            (self.opt_rect_data, "📁 Data Source", "Custom CSV" if self.use_custom_data else "Built-In Real Data", "Press 4" if self.custom_data_available else "Not Found"),
+        ]
 
-        # --- How-to-play panel: fills the lower half with real content
-        # instead of empty space, and doubles as a quick rules reference. ---
-        howto_rect = pygame.Rect(theme.WINDOW_WIDTH // 2 - 420, 410, 840, 330)
-        pygame.draw.rect(self.screen, theme.PANEL_BG, howto_rect, border_radius=12)
-        pygame.draw.rect(self.screen, theme.PANEL_BORDER, howto_rect, width=2, border_radius=12)
+        for rect, label, val, shortcut in opts:
+            is_hover = rect.collidepoint(mouse_pos)
+            bg = theme.PANEL_BG_LIGHT if is_hover else theme.PANEL_BG_RAISED
+            b_col = theme.ACCENT if is_hover else theme.PANEL_BORDER_BRIGHT
+            pygame.draw.rect(self.screen, bg, rect, border_radius=8)
+            pygame.draw.rect(self.screen, b_col, rect, width=1, border_radius=8)
 
-        howto_header = self.font_header.render("How to Play", True, theme.ACCENT)
+            lbl_surf = self.font_small.render(label, True, theme.TEXT_MUTED)
+            val_surf = self.font_body.render(val, True, theme.TEXT_PRIMARY)
+            sc_surf = self.font_small.render(shortcut, True, theme.ACCENT)
+
+            self.screen.blit(lbl_surf, (rect.x + 12, rect.y + 8))
+            self.screen.blit(val_surf, (rect.x + 12, rect.y + 26))
+            self.screen.blit(sc_surf, (rect.right - sc_surf.get_width() - 12, rect.y + 16))
+
+        # Launch Button
+        btn_hover = self.btn_launch_menu.collidepoint(mouse_pos)
+        btn_bg = theme.ADVANCE_BUTTON_BG_HOVER if btn_hover else theme.ADVANCE_BUTTON_BG
+        pygame.draw.rect(self.screen, btn_bg, self.btn_launch_menu, border_radius=10)
+        pygame.draw.rect(self.screen, theme.ACCENT_BRIGHT if btn_hover else theme.ACCENT, self.btn_launch_menu, width=2, border_radius=10)
+
+        launch_txt = self.font_header.render("🚀  LAUNCH SIMULATION", True, theme.TEXT_HIGHLIGHT)
+        self.screen.blit(launch_txt, (
+            self.btn_launch_menu.x + (self.btn_launch_menu.width - launch_txt.get_width()) // 2,
+            self.btn_launch_menu.y + (self.btn_launch_menu.height - launch_txt.get_height()) // 2
+        ))
+
+        # How to Play Container
+        howto_rect = pygame.Rect(theme.WINDOW_WIDTH // 2 - 420, 395, 840, 380)
+        pygame.draw.rect(self.screen, theme.PANEL_BG, howto_rect, border_radius=14)
+        pygame.draw.rect(self.screen, theme.PANEL_BORDER, howto_rect, width=1, border_radius=14)
+
+        howto_header = self.font_header.render("TACTICAL DIRECTIVES", True, theme.ACCENT)
         self.screen.blit(howto_header, (howto_rect.x + 24, howto_rect.y + 18))
 
-        howto_lines = [
-            "This game does NOT play itself — nothing happens until YOU act.",
-            "",
-            "• Click \"Advance\" (or press Space/Enter) to move forward one step at a time.",
-            "• Spend belief points on traits — some trade reach for a higher risk of being noticed.",
-            "• The map shows real geography: regions are colored shapes, platforms are squares.",
-            "  Click Nepal on the world map to zoom into its real districts; Backspace to zoom out.",
-            "• Click any region or platform to inspect its stats.",
-            "• Watch the Belief vs. Countermeasure bar — you're racing to 95% belief before they",
-            "  correct 90% of the world back to skeptical.",
-            "• Fact-checkers telegraph strikes 1-2 turns ahead — react before they land. Past ~40%",
-            "  belief, multiple strikes can threaten different regions at once (\"Crackdown\").",
+        directives = [
+            ("▶ Player-Paced Turns:", "The simulation advances step-by-step when you click ADVANCE or press SPACE."),
+            ("🧬 Trait Evolution:", "Spend accumulated Belief Points on contagion vectors and resistance shields."),
+            ("🌍 Real Geography & Networks:", "Hover and click nations or platforms. Click Nepal to drill into districts."),
+            ("🏁 Infection Race:", "Reach 95% global belief before fact-checkers establish 90% skeptical immunity."),
+            ("⚠️ Strike Alerts & Crackdown:", "Fact-checkers telegraph targeted strikes 1-3 turns ahead — defend in time!"),
         ]
-        y = howto_rect.y + 50
-        for line in howto_lines:
-            color = theme.TEXT_SECONDARY if line.startswith("•") or line.startswith("  ") else theme.TEXT_PRIMARY
-            text_surf = self.font_body.render(line, True, color)
-            self.screen.blit(text_surf, (howto_rect.x + 24, y))
-            y += 24
+
+        y = howto_rect.y + 54
+        for title, desc in directives:
+            t_surf = self.font_body.render(title, True, theme.TEXT_PRIMARY)
+            d_surf = self.font_body.render(desc, True, theme.TEXT_SECONDARY)
+            self.screen.blit(t_surf, (howto_rect.x + 24, y))
+            self.screen.blit(d_surf, (howto_rect.x + 24, y + 22))
+            y += 56
 
     def draw_playing(self) -> None:
         self.screen.fill(theme.BG_COLOR)
@@ -512,6 +608,7 @@ class App:
         self.stats_panel.draw(self.screen, self.engine.get_score_summary(), self.strain.name,
                                model_name=self.selected_model_name)
         self.detail_panel.draw(self.screen, self.selected_region)
+        self.abilities_panel.draw(self.screen, self.engine)
         self.trait_panel.draw(self.screen, self.strain)
         self.news_ticker.draw(self.screen)
         self.advance_button.draw(self.screen)
@@ -521,75 +618,96 @@ class App:
             self.engine.strike_manager.last_strike_results,
             is_crackdown=self.engine.strike_manager.is_crackdown_active,
         )
-        self.effects.draw(self.screen)   # always last: overlays on top of every other panel/the map
+        self.effects.draw(self.screen)
+
+        # Analytics modal overlay (drawn last so it appears on top)
+        self.analytics_modal.draw(self.screen, self.engine.telemetry_history)
+
+        # Analytics toggle button (bottom-left corner)
+        if not self.analytics_modal.visible:
+            analytics_btn_rect = pygame.Rect(20, theme.WINDOW_HEIGHT - 50, 140, 36)
+            mouse_pos = pygame.mouse.get_pos()
+            btn_hover = analytics_btn_rect.collidepoint(mouse_pos)
+            btn_bg = theme.ACCENT_BRIGHT if btn_hover else theme.ACCENT
+            pygame.draw.rect(self.screen, btn_bg, analytics_btn_rect, border_radius=8)
+            btn_text = self.font_body.render("📊 Analytics [A]", True, theme.TEXT_HIGHLIGHT)
+            self.screen.blit(btn_text, (
+                analytics_btn_rect.x + (analytics_btn_rect.width - btn_text.get_width()) // 2,
+                analytics_btn_rect.y + (analytics_btn_rect.height - btn_text.get_height()) // 2
+            ))
+
+            # Handle click on analytics button
+            if pygame.mouse.get_pressed()[0] and btn_hover:
+                self.analytics_modal.toggle()
 
     def draw_game_over(self) -> None:
         self.screen.fill(theme.BG_COLOR)
+        mouse_pos = pygame.mouse.get_pos()
+
         summary = self.engine.get_score_summary()
         won = summary["state"] == GameState.WON
-        result_text = "RUMOR WENT VIRAL" if won else "FACT-CHECKERS WON"
-        result_color = theme.TEXT_WARNING if won else theme.ACCENT
+        result_text = "RUMOR WENT VIRAL — VICTORY" if won else "FACT-CHECKERS CONTAINED THE SPREAD"
+        result_color = theme.COLOR_BELIEF if won else theme.COLOR_CURE
 
         title = self.font_title.render(result_text, True, result_color)
-        self.screen.blit(title, (theme.WINDOW_WIDTH // 2 - title.get_width() // 2, 56))
+        self.screen.blit(title, (theme.WINDOW_WIDTH // 2 - title.get_width() // 2, 45))
 
-        # --- Results panel: real numbers from THIS playthrough, not just
-        # two floating lines -- gives the bigger window real content and
-        # doubles as a basis for the "what would you try differently"
-        # reflection a report's Result Analysis section can draw on. ---
-        results_rect = pygame.Rect(theme.WINDOW_WIDTH // 2 - 420, 130, 840, 150)
+        # Metrics Panel
+        results_rect = pygame.Rect(theme.WINDOW_WIDTH // 2 - 420, 110, 840, 150)
         pygame.draw.rect(self.screen, theme.PANEL_BG, results_rect, border_radius=12)
-        pygame.draw.rect(self.screen, theme.PANEL_BORDER, results_rect, width=2, border_radius=12)
+        pygame.draw.rect(self.screen, theme.PANEL_BORDER, results_rect, width=1, border_radius=12)
 
-        total_trait_levels = sum(self.strain.trait_levels.values()) if self.strain.trait_levels else 0
+        total_traits = sum(self.strain.trait_levels.values()) if self.strain.trait_levels else 0
         most_resistant = max(self.world.regions, key=lambda r: r.skeptical, default=None)
 
         stat_lines = [
-            f"Turns played: {summary['ticks']}",
-            f"Peak global belief: {summary['global_infection_ratio'] * 100:.1f}%",
-            f"Total believers at end: {summary['total_believing']:,}",
-            f"Total corrected (skeptical): {summary['total_skeptical']:,}",
-            f"Trait levels purchased: {total_trait_levels}",
+            f"⏱ Turns Played: {summary['ticks']}",
+            f"📈 Peak Belief: {summary['global_infection_ratio'] * 100:.1f}%",
+            f"👥 Total Believers: {summary['total_believing']:,}",
+            f"🛡️ Total Corrected: {summary['total_skeptical']:,}",
+            f"🧬 Trait Upgrades: {total_traits}",
         ]
         if most_resistant is not None and most_resistant.skeptical > 0:
-            stat_lines.append(f"Hardest-fought region: {most_resistant.name} ({most_resistant.skeptical:,} corrected)")
+            stat_lines.append(f"Hardest Territory: {most_resistant.name} ({most_resistant.skeptical:,} Skeptical)")
 
-        col_split = len(stat_lines) // 2 + len(stat_lines) % 2
+        col_split = 3
         for i, line in enumerate(stat_lines):
-            text_surf = self.font_body.render(line, True, theme.TEXT_PRIMARY)
             col = 0 if i < col_split else 1
             row = i if i < col_split else i - col_split
-            x = results_rect.x + 32 + col * 420
-            y = results_rect.y + 20 + row * 30
+            text_surf = self.font_body.render(line, True, theme.TEXT_PRIMARY)
+            x = results_rect.x + 32 + col * 400
+            y = results_rect.y + 24 + row * 34
             self.screen.blit(text_surf, (x, y))
 
-        # --- Educational panel: real media-literacy takeaway, shown every
-        # round, now in its own bordered panel rather than floating text. ---
-        edu_rect = pygame.Rect(theme.WINDOW_WIDTH // 2 - 420, 300, 840, 240)
+        # Educational Takeaways
+        edu_rect = pygame.Rect(theme.WINDOW_WIDTH // 2 - 420, 280, 840, 250)
         pygame.draw.rect(self.screen, theme.PANEL_BG, edu_rect, border_radius=12)
-        pygame.draw.rect(self.screen, theme.PANEL_BORDER, edu_rect, width=2, border_radius=12)
+        pygame.draw.rect(self.screen, theme.PANEL_BORDER, edu_rect, width=1, border_radius=12)
 
-        edu_header = self.font_header.render("Before you go — spotting real misinformation", True, theme.ACCENT)
+        edu_header = self.font_header.render("MEDIA LITERACY TAKEAWAYS (IFCN STANDARDS)", True, theme.ACCENT)
         self.screen.blit(edu_header, (edu_rect.x + 24, edu_rect.y + 18))
 
-        y = edu_rect.y + 56
+        y = edu_rect.y + 54
         for tip in MEDIA_LITERACY_TIPS:
             tip_surf = self.font_body.render(f"• {tip}", True, theme.TEXT_PRIMARY)
             self.screen.blit(tip_surf, (edu_rect.x + 24, y))
             y += 28
 
-        y += 10
-        if self._using_custom_data_this_round:
-            citation_text = "Verify claims via the International Fact-Checking Network (170+ orgs worldwide) — ifcncodeofprinciples.poynter.org"
-        elif self.selected_map_name == "world":
-            citation_text = "Global fact-checking: International Fact-Checking Network (IFCN) — ifcncodeofprinciples.poynter.org"
-        else:
-            citation_text = "Nepal's IFCN-certified fact-checker: South Asia Check — southasiacheck.org"
-        citation_surf = self.font_small.render(citation_text, True, theme.TEXT_SECONDARY)
-        self.screen.blit(citation_surf, (edu_rect.x + 24, y))
+        # Play Again Button
+        pa_hover = self.btn_play_again.collidepoint(mouse_pos)
+        pa_bg = theme.ADVANCE_BUTTON_BG_HOVER if pa_hover else theme.ADVANCE_BUTTON_BG
+        pygame.draw.rect(self.screen, pa_bg, self.btn_play_again, border_radius=8)
+        pygame.draw.rect(self.screen, theme.ACCENT_BRIGHT if pa_hover else theme.ACCENT, self.btn_play_again, width=1, border_radius=8)
 
-        prompt_surf = self.font_body.render("Press any key or click to return to menu", True, theme.TEXT_SECONDARY)
-        self.screen.blit(prompt_surf, (theme.WINDOW_WIDTH // 2 - prompt_surf.get_width() // 2, edu_rect.bottom + 26))
+        pa_text = self.font_header.render("⟲  PLAY AGAIN", True, theme.TEXT_HIGHLIGHT)
+        self.screen.blit(pa_text, (
+            self.btn_play_again.x + (self.btn_play_again.width - pa_text.get_width()) // 2,
+            self.btn_play_again.y + (self.btn_play_again.height - pa_text.get_height()) // 2
+        ))
+
+        # Academic Export Hint (for TU BCA defense)
+        export_hint = self.font_small.render("📄 Press [E] during game to export academic report figures", True, theme.TEXT_MUTED)
+        self.screen.blit(export_hint, (theme.WINDOW_WIDTH // 2 - export_hint.get_width() // 2, theme.WINDOW_HEIGHT - 30))
 
     def run(self) -> None:
         while True:
