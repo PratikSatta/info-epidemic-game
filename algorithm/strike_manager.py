@@ -1,5 +1,6 @@
 from model.world_graph import WorldGraph
 from model.region import Region
+from model.countermeasure import CounterMeasure
 from algorithm.counter_ai import CounterAI
 
 
@@ -102,6 +103,9 @@ class StrikeManager:
 
         self.pending: list[PendingStrike] = []
         self._cooldown_remaining = 0
+        # Overwritten on every update() call from the active CounterMeasure;
+        # the default only applies if a caller drives the manager directly.
+        self._durable_fraction: float = CounterMeasure.DURABLE_FRACTION
         self.last_strike_results: list[dict] = []    # for the UI: every strike that landed THIS tick (usually 0 or 1, can be more in Crackdown)
         self.is_crackdown_active = False                # for the UI to announce the phase transition once
 
@@ -113,13 +117,20 @@ class StrikeManager:
     def _current_concurrency_cap(self, world: WorldGraph) -> int:
         return self.max_concurrent_strikes if world.global_infection_ratio() >= self.crackdown_belief_threshold else 1
 
-    def update(self, world: WorldGraph) -> None:
+    def update(self, world: WorldGraph,
+               durable_fraction: float = CounterMeasure.DURABLE_FRACTION) -> None:
         """
         Advance the strike state machine by one tick. Should be called
         AFTER the spread algorithm's ambient correction has already been
         applied for this tick, so a strike's "current believers" reflects
         the post-ambient-correction state, not a stale pre-tick snapshot.
+
+        `durable_fraction` is threaded down from the active CounterMeasure so
+        a strike marks the same share of its removals permanent as the ambient
+        correction does. Passing it per call rather than storing it keeps the
+        two in step if the countermeasure is ever retuned mid-run.
         """
+        self._durable_fraction = durable_fraction
         self.last_strike_results = []
 
         was_crackdown = self.is_crackdown_active
@@ -197,7 +208,12 @@ class StrikeManager:
         pop_ceiling = int(target.population * 0.08)
         removed = min(target.believing, removed, pop_ceiling)
         if removed > 0:
-            target.correct(removed)
+            # Same durable fraction as the ambient correction: a strike is a
+            # correction delivered all at once, and the Guess et al. (2023)
+            # persistence finding applies to it identically. Without this a
+            # struck region would revert completely and strikes would not
+            # contribute to draining the S -> B -> K -> S cycle.
+            target.correct(removed, self._durable_fraction)
         self.last_strike_results.append({"region_name": target.name, "removed": removed})
         self._cooldown_remaining = self.cooldown_turns
 

@@ -169,17 +169,23 @@ class SIRSpreadModel(SpreadAlgorithm):
             if exposure_deltas[region] > 0:
                 region.expose(exposure_deltas[region])
             if correction_deltas[region] > 0:
-                region.correct(correction_deltas[region])
+                region.correct(correction_deltas[region], counter.durable_fraction)
 
             # --- Waning immunity (K → S reversion) ---
             # Corrected (Skeptical) people gradually drift back to
             # Susceptible, modelling the 61% correction decay found
             # by Guess et al. (2023) over ~14 days. See __init__ for
             # the full research justification and rate derivation.
-            if region.skeptical > 0:
-                raw_waning = region.skeptical * self._waning_immunity_rate + \
+            #
+            # Draws from revertible_skeptical, not from `skeptical`: the other
+            # 39% of each correction is durable (CounterMeasure.DURABLE_FRACTION)
+            # and stays corrected for good. This is what stops the model from
+            # being a closed S -> B -> K -> S cycle that never terminates.
+            if region.revertible_skeptical > 0:
+                revertible = region.revertible_skeptical
+                raw_waning = revertible * self._waning_immunity_rate + \
                              self._waning_carry.get(region, 0.0)
-                waned = min(region.skeptical, int(raw_waning))
+                waned = min(revertible, int(raw_waning))
                 self._waning_carry[region] = raw_waning - waned
                 if waned > 0:
                     region.skeptical -= waned
@@ -306,15 +312,19 @@ class SEIRSpreadModel(SpreadAlgorithm):
             if new_exposed_deltas[region] > 0:
                 region.move_to_exposed(new_exposed_deltas[region])
             if correction_deltas[region] > 0:
-                region.correct(correction_deltas[region])
+                region.correct(correction_deltas[region], counter.durable_fraction)
 
             # --- Waning immunity (K → S reversion) ---
             # Same research basis as SIRSpreadModel: Guess et al. (2023)
-            # found 61% of correction effects decay within 2 weeks.
-            if region.skeptical > 0:
-                raw_waning = region.skeptical * self._waning_immunity_rate + \
+            # found 61% of correction effects decay within 2 weeks -- and, in
+            # the same finding, that the remaining 39% persist. Waning draws
+            # only from the revertible pool so that durable share is never
+            # handed back to Susceptible.
+            if region.revertible_skeptical > 0:
+                revertible = region.revertible_skeptical
+                raw_waning = revertible * self._waning_immunity_rate + \
                              self._waning_carry.get(region, 0.0)
-                waned = min(region.skeptical, int(raw_waning))
+                waned = min(revertible, int(raw_waning))
                 self._waning_carry[region] = raw_waning - waned
                 if waned > 0:
                     region.skeptical -= waned

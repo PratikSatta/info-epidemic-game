@@ -16,14 +16,33 @@ class CounterMeasure:
     #   39% of corrections persist after 2 weeks -- implying most
     #   "corrected" individuals drift back, so the effective net correction
     #   rate is substantially lower than raw exposure numbers suggest.
+    #
+    # durable_fraction:  the 39% half of that same Guess et al. (2023)
+    #   finding. Participants recontacted two weeks after a correction still
+    #   showed 39% of the initial accuracy gain, so 39% of a correction is
+    #   durable and 61% decays. The decay half was already modelled (the
+    #   5%/tick waning in algorithm/spread_model.py); this is the
+    #   persistence half, which was missing.
+    #
+    #   Without it every corrected person eventually returns to Susceptible,
+    #   which makes S -> B -> K -> S a CLOSED cycle. A closed cycle has an
+    #   interior fixed point, and the simulation parks there: measured on the
+    #   real engine the default scenario sits at 31% S / 21% B / 48% K from
+    #   tick 75 onwards and never moves again, so neither win nor loss is
+    #   ever reached. Marking 39% of each correction durable drains the cycle
+    #   by that fraction on every lap, so belief eventually dies out and the
+    #   game reaches a conclusion on its own.
+    DURABLE_FRACTION: float = 0.39
 
     def __init__(self,
                  base_strength: float = 0.011,
                  growth_rate: float = 0.003,
-                 cap: float = 0.120):
+                 cap: float = 0.120,
+                 durable_fraction: float = DURABLE_FRACTION):
         self.strength = base_strength
         self.growth_rate = growth_rate
         self.cap = cap
+        self.durable_fraction = durable_fraction
         self.active = False
 
     def activate(self) -> None:

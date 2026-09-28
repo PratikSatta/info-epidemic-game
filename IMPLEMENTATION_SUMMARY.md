@@ -70,13 +70,34 @@ exposure is below 1.0 — at seed counts of a handful of believers in a region o
 millions, both the internal and cross-edge terms routinely compute to fractions
 just under 1, which would stall the simulation permanently at the seed amount.
 
-### Waning immunity (SIRS)
+### Waning immunity (SIRS) and durable skepticism
 
 Corrected people drift back to Susceptible at 5% per tick. The rate is derived
 from Guess et al. (2023): only 39% of a correction persisted at two-week
 follow-up, i.e. 61% decayed over ~14 ticks, giving `1 - 0.39^(1/14) ≈ 0.067`.
 The code deliberately uses a more conservative 0.05. This turns the SIR model
 into SIRS, the standard approach when immunity is not permanent.
+
+**The other half of that same finding is that 39% persisted** — and until
+recently the code implemented only the decay, letting 0% persist. That made
+`S → B → K → S` a *closed* cycle: every corrected person eventually returned to
+Susceptible and could believe again, so no one ever left the loop. A closed
+cycle has an interior fixed point, and the simulation parked there — measured
+on the real engine the default scenario sat at 31% S / 21% B / 48% K from tick
+75 onwards and never moved again, reaching neither win nor loss.
+
+`CounterMeasure.DURABLE_FRACTION = 0.39` now marks 39% of each correction as
+permanent. It is stored as `Region.durable_skeptical`, a **sub-count** of
+`skeptical` rather than a fifth compartment, so `population` remains exactly the
+sum of the compartments, `total_skeptical()` still reports everyone skeptical,
+and every existing reader of `skeptical` (win/loss, telemetry, map colouring,
+side panels) is unaffected. Waning draws only from `revertible_skeptical`
+(`skeptical - durable_skeptical`); strikes apply the same fraction, threaded
+through `StrikeManager.update()` from the active countermeasure.
+
+With the fraction at the research value the default scenario now concludes:
+belief goes extinct at tick 259. The fraction is a dial on game length —
+0.20 ends at 5584, 0.39 at 2742, 0.70 at 1181.
 
 ### Countermeasure
 
@@ -268,6 +289,11 @@ What has actually been verified, by executing the program:
   and the reported reduction toward zero
 - The renewal estimator reduces exactly to `inc(t)/inc(t−1)` for SIR, confirming
   the implementation against the closed-form case
+- `durable_skeptical` never exceeds `skeptical` and never goes negative, at every
+  tick of runs in both models (checked across 7 regions × 400 ticks)
+- A durable fraction of 0.0 reproduces the previous behaviour exactly
+  (`finalB = 21.4%`, `finalK = 47.6%`), which is how the closed-cycle diagnosis
+  was confirmed rather than assumed
 - `report_exports/` receives a correct CSV and JSON; peak and final statistics
   cross-check against the CSV
 - The right-hand column fits inside the window at 1440×900, 1024×768, 1000×600,
@@ -292,8 +318,9 @@ were addressed in the audit-fix pass and are recorded here only for the record.
 | Tactical abilities | `sensationalist_blitz` injected straight into Believing in SEIR mode, skipping the Exposed latency stage | **fixed** |
 | Tactical abilities | No timed-effect system existed at all, which was the root cause of the above | **fixed** |
 | R_t | Inflated to ~150 rather than ~1: when the countermeasure is inactive a placeholder `gamma = 0.001` divides into R_t. This squashed the in-game chart (threshold line rendered at ~0.7% height), always reported "GROWTH", and made the reported "R_t reduction" an artifact | **fixed** |
-| Balance | The 90% loss condition is unreachable — corrections cap at 12%/tick against 5%/tick waning, so corrected population plateaus near 50% | open |
-| Balance | The default scenario on the Nepal map never terminates — it reaches neither condition and runs indefinitely | open |
+| Balance | The 90% loss condition is unreachable — corrections cap at 12%/tick against 5%/tick waning, so corrected population plateaus near 50% | **fixed** — the plateau was a symptom of the closed cycle, not of the threshold. With the durable fraction in place the loss condition is reached; see the two rows below for the remaining timing question |
+| Balance | The default scenario on the Nepal map never terminates — it reaches neither condition and runs indefinitely | **fixed** — caused by the missing durable fraction (see *Waning immunity*); the default scenario now resolves and reaches the loss condition, though the trigger fires later than it should (next row) |
+| Balance | The loss trigger is formulated against total population (`K/N ≥ 0.90`), but the outcome is decided far earlier. At `durable = 0.39` the default scenario's corrected-to-believing mindshare `K/(K+B)` passes 90% at tick 75 and belief goes extinct at tick 259 — yet `K/N` does not reach 90% until tick 2742, so ~2,500 ticks of a decided game run on | open |
 | Balance | The earthquake scenario on Nepal reaches the 75% win in ~15 ticks, so the most expensive ability is barely affordable in a winning run | open |
 | Export | PNG figures are never generated — `generate_matplotlib_figures()` is defined but called from nowhere | open |
 | Export | Filenames use second granularity, so pressing `E` twice within one second silently overwrites the first dataset | open |

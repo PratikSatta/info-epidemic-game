@@ -103,7 +103,7 @@ class GameEngine:
         self.spread_algo.tick(self.world, self.strain, self.counter)
 
         if self.counter.active:
-            self.strike_manager.update(self.world)
+            self.strike_manager.update(self.world, self.counter.durable_fraction)
             self.last_strike_result = self.strike_manager.last_strike_result
         else:
             self.last_strike_result = None
