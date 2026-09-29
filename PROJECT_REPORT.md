@@ -62,7 +62,7 @@ Misinformation spreads through populations in a manner that is mathematically si
 
 The system implements two interchangeable spread models (SIR and a latency-added SEIR variant), two map modes (the seven provinces of Nepal with real population and internet-access data, and a 202-country world map generated from GeoJSON outlines with RSF-derived per-country transmission modifiers, plus four non-geographic platform nodes), a countermeasure layer with telegraph strikes, a permanent trait-catalogue upgrade system, and three tactical abilities. The effective reproduction number R_t is **estimated from the realised incidence curve** using the renewal equation of Cori et al. (2013), rather than derived from the analytic β/γ form, because the model has no single constant removal rate. All model parameters are documented against peer-reviewed literature, and turn-by-turn telemetry can be exported as CSV, JSON and a formatted summary.
 
-Correctness is established by a single executable verification script comprising **88 checks** that run against the real simulation engine and the real pygame application in headless mode. The current state is **78 passed, 1 failed, 9 warnings**, where the single failure is a documented missing example data file rather than a defect in the software. Several substantive modelling defects were found and corrected through this process, the most significant being that the original compartment structure formed a closed cycle `S → B → K → S` with an interior fixed point, causing simulations to park at a stable mixture and never conclude. The report's Results chapter presents these findings with the measured evidence behind each one, and Chapter 5 documents the items that remain open, including the fact that player skill currently does not determine the outcome of a game.
+Correctness is established by a single executable verification script comprising **92 checks** that run against the real simulation engine and the real pygame application in headless mode. The current state is **85 passed, 0 failed, 7 warnings**, the warnings being five window sizes too short to render every panel line in full and two world-map data-quality items rather than anything affecting correctness. Several substantive modelling defects were found and corrected through this process, the most significant being that the original compartment structure formed a closed cycle `S → B → K → S` with an interior fixed point, causing simulations to park at a stable mixture and never conclude. The report's Results chapter presents these findings with the measured evidence behind each one, and Chapter 5 documents the items that remain open, including the fact that player skill currently does not determine the outcome of a game.
 
 **Keywords:** compartmental model, SIR, SEIR, misinformation, belief dynamics, reproduction number, renewal equation, pygame, simulation.
 
@@ -181,8 +181,8 @@ The system covers:
 - An ambient countermeasure with a growth ramp and a cap, plus a telegraph-strike escalation system with a two-front "crackdown" phase.
 - A countermeasure AI that selects which region to focus correction on.
 - Real-time analytics: a compartmental-trajectory chart and an R_t chart against the epidemic threshold of 1.0.
-- Turn-by-turn telemetry export as CSV, JSON and a formatted summary text.
-- A headless-capable verification suite of 88 checks.
+- Turn-by-turn telemetry export as CSV, JSON and a formatted summary text, plus a pair of publication-quality PNG figures rendered from the same run.
+- A headless-capable verification suite of 92 checks.
 
 ### 1.4.2 Limitations
 
@@ -791,13 +791,13 @@ Both `python view/main.py` and `python -m view.main` are supported. Running the 
 
 | Layer | Files | Lines |
 |---|---|---|
-| `view/` | main.py (855), ui_panels.py (714), geo_map_view.py (600), analytics_modal.py (286), tactical_abilities_panel.py (223), map_view.py (135), theme.py (86), scrollable_panel_base.py (54), fonts.py (216), plus `__init__.py` | ≈ 3,169 |
+| `view/` | main.py (861), ui_panels.py (714), geo_map_view.py (600), analytics_modal.py (286), tactical_abilities_panel.py (223), map_view.py (135), theme.py (86), scrollable_panel_base.py (54), fonts.py (216), plus `__init__.py` | ≈ 3,175 |
 | `model/` | csv_loader (282), region (145), info_strain (137), trait (131), world_graph (119), effect (83), world_map_data (75), real_world_data (73), countermeasure (70), scenarios (60), geo_data (42), platform_node (39), plus `__init__.py` | ≈ 1,256 |
-| `algorithm/` | spread_model (357), export_report_figures (352), strike_manager (226), reproduction_number (150), counter_ai (79), graph_traversal (53), plus `__init__.py` | ≈ 1,217 |
+| `algorithm/` | spread_model (357), export_report_figures (395), strike_manager (226), reproduction_number (150), counter_ai (79), graph_traversal (53), plus `__init__.py` | ≈ 1,260 |
 | `controller/` | game_engine (299), plus `__init__.py` | ≈ 299 |
-| `tests/` | verify_simulation (654) | 654 |
+| `tests/` | verify_simulation (681) | 681 |
 | Data tooling | data/geo/prepare_nepal_geo.py (161) | 161 |
-| **Total** | **33 Python modules** | **≈ 6,756** |
+| **Total** | **33 Python modules** | **≈ 6,832** |
 
 ## 4.3 Implemented Modules
 
@@ -928,7 +928,7 @@ Two principles govern what is checked:
 
 **Assert on the real system, not on mocks.** Every simulation check constructs an actual `WorldGraph`, an actual `InfoStrain`, an actual `SpreadAlgorithm` and a real `GameEngine`, and runs real ticks. Every UI check constructs the actual `App` under dummy SDL drivers. Nothing is stubbed.
 
-**A claim in the documentation is a claim under test.** Section 7 of the suite re-verifies the open gaps that are mechanically checkable against the Known-gaps table, including the ones that are supposed to be failures. The missing example CSVs are a `FAIL` because the documentation says they are missing; if someone added them, the check would flag that the documentation is now stale.
+**A claim in the documentation is a claim under test.** Section 7 of the suite re-measures the checkable rows of the Known-gaps table — that the example CSVs load, that the centroids and the RSF modifiers are still where the documentation says they are, and that two exports in the same second produce distinct files. A row therefore cannot quietly stay documented as open once it has been fixed, nor as fixed once it has regressed: the check and the prose are read in the same place.
 
 ## 5.2 Test Sections
 
@@ -942,31 +942,28 @@ Two principles govern what is checked:
 | 4 | Tactical abilities | Every ability's effect is visible immediately and **expires** without leaking into the permanent base value; costs are charged; cooldowns are set; a missing target region costs nothing |
 | 5 | Report export | CSV and JSON are written with the documented schema; peak and final statistics cross-check against the CSV; undefined R_t values appear as empty cells, not zero |
 | 6 | Headless application | Both map modes launch, simulate and render end-to-end; every documented key binding responds; every glyph is drawable; no panel paints outside its box at any of seven resolutions; panel clicks land only inside their own panel; the analytics overlay cannot consume a click while not drawn |
-| 7 | Documented open gaps | The open gaps that are mechanically checkable — the same-second export overwrite, the centroids falling outside their own outline, the RSF clamp loss and the missing example CSVs — are re-verified, including the ones that are supposed to fail |
+| 7 | Documented open gaps | The checkable rows of the Known-gaps table are re-measured — that the example CSVs load, that the centroids and the RSF modifiers are still as documented, and that two exports in the same second produce distinct files — so a row cannot stay documented as open once it is fixed, or as fixed once it has regressed |
 
-Total: **88 checks**.
+Total: **92 checks**.
 
 ## 5.3 Results
 
 Current state of the suite:
 
 ```
-78 passed, 1 failed, 9 warnings
-    FAILED: custom CSV files exist
-    WARN:   no PNG figures produced
+85 passed, 0 failed, 7 warnings
     WARN:   1366x768: window too small for full telemetry
     WARN:   1024x768: window too small for full telemetry
     WARN:   1000x600: window too small for full telemetry
     WARN:   800x500: window too small for full telemetry
     WARN:   640x480: window too small for full telemetry
-    WARN:   export overwrites itself within the same second
     WARN:   15 of 202 country centroids fall outside their own outline
     WARN:   126 of 202 RSF modifiers exceed the clamp ceiling of 1.0
 ```
 
-The single failure is the documented missing example CSVs: `data/regions_example.csv` and `data/strain_config_example.csv` do not exist and were never committed. This makes the custom-CSV map mode unreachable. An exit code of 1 with this as the only failure is the expected state of the repository, not a regression.
+The suite exits zero. Earlier revisions of this report recorded one failure, and it was the two example CSVs the custom-data mode depends on, which had never been committed and made that mode unreachable. That gap is now closed — the examples exist, and the suite loads them rather than merely asserting they are present, so a malformed example could not leave the mode advertised but broken.
 
-The warnings are the other documented gaps, plus one each for the five window sizes too short to give every panel its full content height — a report of expected behaviour under the documented degradation policy, not a fault.
+All seven warnings are reports of measured behaviour rather than breakage. Five are the window sizes too short to give every panel its full content height, which is the documented degradation policy working as intended. The other two are world-map data-quality items: the centroids that fall outside their own outline, and the RSF modifiers lost to the clamp.
 
 ## 5.4 Defects Discovered and Corrected
 
@@ -1000,6 +997,9 @@ The audit pass found and corrected a substantial number of defects, several of t
 | D-22 | Repo | No `.gitignore` existed and 24 compiled `.pyc` files were tracked | Inspecting the repository | `.gitignore` added |
 | D-23 | Repo | The documented launch command crashed with `ModuleNotFoundError` | Running the documented command | `sys.path` insertion restored |
 | D-24 | Repo | No dependency manifest, so a fresh clone could not reproduce the environment | Reviewing the repo | `requirements.txt` added |
+| D-25 | Export | PNG figures were never generated: `generate_matplotlib_figures()` was defined and called from nowhere, so every export produced the data with no plots while the module's own docstring advertised publication-ready figures | Reading the export module against its docstring | `export_academic_report()` renders them itself, sharing the run name of the CSV they plot so the two are obviously one dataset |
+| D-26 | Export | Filenames used second granularity, so pressing `E` twice within one second silently overwrote the first dataset. Measured: 3 files after two exports, where 6 were expected | Pressing `E` twice in succession | `_unique_run_name()` adds a suffix only when the plain name is taken; measured 10 files after two exports, five per run |
+| D-27 | Custom data | `data/regions_example.csv` and `data/strain_config_example.csv` were never committed, so the custom-CSV map mode was unreachable and this was the suite's single failing check | Reviewing the repository against the advertised feature | Both examples committed, and the suite now loads them and plays a game on the result rather than only asserting they exist |
 
 One methodological point deserves emphasis. Two of these defects — D-05 and D-17 — were invisible to the test suite that existed at the time, and in both cases the reason was the same: the check was a *model* of the thing rather than a measurement of it. The old R_t check asserted that the value was "plausible" without comparing it against anything external; the old layout check compared rectangles rather than pixels. Both were replaced with checks that observe the real output. Defect D-21 is a subtler instance: the first fix for D-20 was correct by its own logic and still looked wrong, because the check tested that a glyph was present rather than that it was legible.
 
@@ -1009,11 +1009,10 @@ Two corrections to the project's own documentation are also recorded. Earlier re
 
 The following are known and documented, and are not addressed by this project:
 
+Three items previously listed here — the unreachable custom-CSV mode, the figures that were never generated, and the same-second export overwrite — were closed in the audit pass that produced this revision and are recorded as D-25 to D-27 in Table 5.2. What remains open is below.
+
 | Area | Issue |
 |---|---|
-| Custom data | `data/regions_example.csv` and `data/strain_config_example.csv` do not exist, making the custom-CSV map mode unreachable. This is the suite's single failure. |
-| Export | PNG figures are never generated — `generate_matplotlib_figures()` is defined but called from nowhere. |
-| Export | Filenames use second granularity, so pressing `E` twice within one second silently overwrites the first dataset. Measured: 3 files after two exports, expected 6. |
 | World map | Country populations are schematic (~250–500k each), so geography carries little population signal. Platform nodes are 0.011% of the total and their mechanic is effectively invisible. |
 | World map | The RSF transmission modifier is clamped to a ceiling of 1.0, so per-country penalties survive but boosts are unrepresentable. Measured: 126 of 202 modifiers exceed the ceiling; only 114 distinct edge weights survive across 406 connections. |
 | World map | For 15 of 202 countries the centroid falls outside the country's own outline (measured; an earlier figure of 55 was based on a stricter test), so labels and strike effects draw in the wrong place. |
@@ -1148,7 +1147,7 @@ The results support four conclusions about the model, beyond the software engine
 
 InfoSpread Simulator is a desktop application that applies compartmental epidemic modelling to the spread of a false belief across a weighted geographic network. It implements two interchangeable spread models, two map modes covering real Nepali and global data, a literature-grounded countermeasure layer with telegraph strikes, a permanent trait system and three timed tactical abilities, a renewal-equation estimator for the effective reproduction number, live analytics, and turn-by-turn telemetry export in three formats.
 
-The system comprises approximately 6,756 lines of Python across 33 modules, organised in four layers with one-directional dependencies, and is verified by a single executable script of 88 checks that runs the real engine and the real application in headless mode.
+The system comprises approximately 6,832 lines of Python across 33 modules, organised in four layers with one-directional dependencies, and is verified by a single executable script of 92 checks that runs the real engine and the real application in headless mode.
 
 ## 7.2 Objectives Against Achievements
 
@@ -1162,8 +1161,8 @@ The system comprises approximately 6,756 lines of Python across 33 modules, orga
 | 4 | Countermeasure layer with telegraph strikes | **Achieved** — growth ramp, cap, region-dependent effectiveness, telegraph warning, and a crackdown escalation phase |
 | 5 | Player decision layer with real trade-offs | **Achieved** — 4 traits × multiple levels with documented trade-offs, and 3 abilities with costs, cooldowns and expiring effects |
 | 6 | R_t estimated from the incidence curve | **Achieved** — renewal-equation estimator, validated against the closed-form SIR case, observed band 0.4–2.1 |
-| 7 | Verification suite executing the real system | **Achieved** — 88 checks, one documented failure, seven test sections, negative controls demonstrated |
-| 8 | Honest documentation of what does not work | **Achieved** — 9 open items catalogued, the mechanically checkable ones re-verified by the suite; 24 defects recorded with how each was found |
+| 7 | Verification suite executing the real system | **Achieved** — 92 checks, no failures, seven test sections, negative controls demonstrated |
+| 8 | Honest documentation of what does not work | **Achieved** — 6 open items catalogued, the mechanically checkable ones re-verified by the suite; 27 defects recorded with how each was found |
 
 ## 7.3 Limitations
 
@@ -1176,10 +1175,6 @@ It should also be noted that eight of the model's parameters have no direct empi
 **Rebalance the countermeasure schedule.** The highest-priority item. Making activation respond to the strain's *rate* of growth rather than its absolute belief level would mean a fast-spreading player is punished later rather than sooner, which would make the player's decisions consequential. This is the change most likely to convert the system from a model into a game.
 
 **Re-examine `sensationalist_blitz`.** The ability is currently counterproductive for the reason given in Section 6.4. Either its effect on the activation threshold should be decoupled from the global infection ratio, or the ability should be redesigned around a different mechanism.
-
-**Generate the figures.** `generate_matplotlib_figures()` exists and is called from nowhere. Wiring it up would complete the report-export feature and let a run produce publication-ready plots directly. Coupling this with unique export filenames would resolve the same-second overwrite defect as well.
-
-**Commit or remove the custom-CSV path.** Either supply the two example CSVs so the map mode is reachable, or remove the mode and its documentation. Leaving an advertised feature unreachable is the one thing the test suite currently fails on.
 
 **Replace schematic world populations.** Real per-country population figures would make geography carry population signal, which would in turn make the world map a more useful analytical surface than it is now. The centroid-inside-outline issue (15 countries) should be resolved at the same time.
 
@@ -1229,7 +1224,7 @@ Requires Python 3.14 or later.
 | `ESC` | Close the analytics modal; then reset map zoom |
 | `F` / `F11` | Toggle fullscreen |
 | `5` | Switch to the Nepal map |
-| `4` | Switch to custom CSV data — **currently inert**, see Known gaps |
+| `4` | Switch to custom CSV data, loaded from `data/regions_example.csv` and `data/strain_config_example.csv` |
 
 ### A.3 Mouse Controls
 
@@ -1263,7 +1258,7 @@ algorithm/     spread_model (SIR, SEIR)  reproduction_number (renewal R_t)
                counter_ai  strike_manager  export_report_figures
                graph_traversal
 data/          geo/ (map JSON)  something/ (legacy, orphaned)
-tests/         verify_simulation.py (88 checks)
+tests/         verify_simulation.py (92 checks)
 ```
 
 **Note on `algorithm/graph_traversal.py`.** This module implements breadth-first search, depth-first search and Dijkstra's algorithm over the region graph. It is not called by the running simulation. It is included as algorithmic coursework, and Dijkstra's edge-cost parameterisation (`1 − connection_weight`) is meaningful — it computes how easily the strain can reach a region — so it is retained rather than removed. `MinimaxCounterAI` in `algorithm/counter_ai.py` is likewise implemented and available but not the AI currently wired up, which is `GreedyCounterAI`.
@@ -1277,10 +1272,10 @@ python tests/verify_simulation.py
 The script prints results grouped by section and exits with code 1 if any check fails. The expected output on a clean checkout is:
 
 ```
-78 passed, 1 failed, 9 warnings
+85 passed, 0 failed, 7 warnings
 ```
 
-The single failure is the documented missing example CSV files. The suite runs headless and requires no display.
+The warnings are the five window sizes too short for the full panel content and the two world-map data-quality items; none of them is a failure. The suite runs headless and requires no display.
 
 ## Appendix D: Glossary
 

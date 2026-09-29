@@ -278,10 +278,23 @@ try:
         text = open(os.path.join(tmpdir, txts[0]), encoding="utf-8").read()
         check("summary mentions the citations", "Cori" in text or "Guess" in text,
               f"{len(text)} chars")
-    # PNG figures
+    # PNG figures. export_academic_report() renders these itself now, sharing
+    # the run name of the CSV they were plotted from, so an export and its
+    # plots are obviously one dataset.
     pngs = [f for f in files if f.endswith(".png")]
-    if not pngs:
-        warn("no PNG figures produced", "generate_matplotlib_figures() is never called")
+    try:
+        import matplotlib  # noqa: F401
+        have_mpl = True
+    except ImportError:
+        have_mpl = False
+    if have_mpl:
+        check("export produces the PNG figures", len(pngs) == 2, str(pngs))
+        csv_stem = csvs[0][: -len("_telemetry.csv")] if csvs else None
+        check("figures share the run name of the CSV they plot",
+              csv_stem is not None and all(p.startswith(csv_stem) for p in pngs),
+              f"{csv_stem} vs {pngs}")
+    else:
+        warn("no PNG figures produced", "matplotlib not installed")
 except Exception as e:
     import traceback
     check("export runs without raising", False, f"{type(e).__name__}: {e}")
@@ -629,12 +642,26 @@ if above:
 else:
     check("RSF modifiers survive the clamp", True, f"range {min(mods):.3f}-{max(mods):.3f}")
 
-# (d) custom CSV path
+# (d) custom CSV path -- now closed: the example files are committed and the
+# mode is reachable. Load them for real rather than merely asserting the files
+# are present, because a malformed example would leave the mode advertised but
+# broken, which is worse than the gap it replaced.
 from view.main import CUSTOM_REGIONS_CSV_PATH, CUSTOM_STRAIN_CSV_PATH
-check("custom CSV files exist", os.path.exists(CUSTOM_REGIONS_CSV_PATH)
-      and os.path.exists(CUSTOM_STRAIN_CSV_PATH),
-      f"{CUSTOM_REGIONS_CSV_PATH} exists={os.path.exists(CUSTOM_REGIONS_CSV_PATH)}, "
-      f"{CUSTOM_STRAIN_CSV_PATH} exists={os.path.exists(CUSTOM_STRAIN_CSV_PATH)}")
+from model.csv_loader import build_world_from_csv, build_strain_from_csv
+try:
+    custom_world, custom_world_warns = build_world_from_csv(CUSTOM_REGIONS_CSV_PATH)
+    custom_strain, custom_strain_warns = build_strain_from_csv(CUSTOM_STRAIN_CSV_PATH)
+    custom_warnings = custom_world_warns + custom_strain_warns
+    check("custom CSV example loads", True,
+          f"{len(custom_world.regions)} regions, strain '{custom_strain.name}'")
+    check("custom CSV example loads without warnings", not custom_warnings,
+          str(custom_warnings))
+    isolated = [r.name for r in custom_world.regions if not r.connections]
+    check("custom CSV example leaves no region isolated", not isolated, str(isolated))
+    check("custom CSV data is selectable in the menu", app.custom_data_available,
+          f"custom_data_available={app.custom_data_available}")
+except Exception as e:
+    check("custom CSV example loads", False, f"{type(e).__name__}: {e}")
 
 # ------------------------------------------------------------------- summary
 print()

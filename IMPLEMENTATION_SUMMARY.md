@@ -37,7 +37,7 @@ found.
 | `ESC` | Close the analytics modal; then reset map zoom |
 | `F` / `F11` | Toggle fullscreen |
 | `5` | Switch to the Nepal map |
-| `4` | Switch to custom CSV data — **inert**, see Known gaps |
+| `4` | Switch to custom CSV data (`data/regions_example.csv`, `data/strain_config_example.csv`) |
 
 ---
 
@@ -263,7 +263,7 @@ roughly a third.
 
 ### Report export (`E`)
 
-Writes three timestamped files to `report_exports/`:
+Writes files to `report_exports/`, all sharing one run name:
 
 - `*_telemetry.csv` — tick-by-tick data, Excel-ready
 - `*_telemetry.json` — same data with metadata, for programmatic analysis
@@ -271,15 +271,22 @@ Writes three timestamped files to `report_exports/`:
   peak R_t with tick numbers, final R_t, countermeasure activation tick, average
   R_t before and after activation, final compartment distribution, and the
   research citations
+- `*_incidence.png` and `*_reproduction.png` — the incidence curve and the R_t
+  series (matplotlib)
 
-PNG figure export is **not implemented** — see Known gaps.
+The PNGs are drawn by `generate_matplotlib_figures()`, which `export_academic_report()`
+calls itself, so pressing `E` produces the plots as well as the data. The run name
+carries a counter that is incremented until it is free, so two exports in the same
+second produce two complete sets rather than one overwriting the other. matplotlib
+is an optional dependency: without it the three data files are still written and the
+ticker reports why the figures are missing, rather than failing the export.
 
 ---
 
 ## Verification status
 
 **The test suite is a single script, not a framework.** `tests/verify_simulation.py`
-runs 88 checks against the real engine and the real pygame app (headless) and
+runs 92 checks against the real engine and the real pygame app (headless) and
 exits non-zero if any fail:
 
 ```
@@ -292,19 +299,17 @@ and an integration test as passing; those tests were never written, and that
 claim was removed rather than restated. The script replaces it with checks that
 actually execute — it asserts on real simulation runs, not on mocks.
 
-One check currently fails, and it is the already-documented missing example
-CSVs (see Known gaps): an exit code of 1 with that as the only failure is the
-expected state of this repository, not a regression. The warnings are the other
-documented gaps (PNG figures never generated, same-second export overwrite,
-country centroids outside their outlines, and RSF modifiers lost to the clamp),
-plus one each for the five window sizes too short to give every panel its full
-content height — 1366×768, 1024×768, 1000×600, 800×500 and 640×480 (a report,
-not a fault: see the panel sizing note below).
+Nothing currently fails; the suite exits 0. The seven warnings are the two
+remaining world-map data-quality items (country centroids outside their outlines,
+and RSF modifiers lost to the clamp), plus one each for the five window sizes too
+short to give every panel its full content height — 1366×768, 1024×768, 1000×600,
+800×500 and 640×480 (a report, not a fault: see the panel sizing note below).
 
 What has actually been verified, by executing the program:
 
 - Both map modes launch, simulate and render end-to-end
-- All documented key bindings respond as described (`4` excepted)
+- All documented key bindings respond as described, `4` included — the custom-CSV
+  path is exercised by loading both example files and playing a full game on them
 - Population is conserved across every tick in both spread models, including
   under corrections, waning and ability use
 - The fractional-carry mechanism works as documented (sub-integer growth
@@ -379,9 +384,9 @@ were addressed in the audit-fix pass and are recorded here only for the record.
 | Balance | `sensationalist_blitz` is actively counterproductive: converting Susceptible → Believing raises the global infection ratio, which trips the countermeasure's activation threshold sooner (tick 11 rather than tick 23) and so ends the run earlier than not casting it | open |
 | Balance | The earthquake scenario on Nepal reaches the 70% win in ~15 ticks, so the most expensive ability (`echo_chamber`, 20 points at 1 point/tick) is unaffordable in a winning run | open |
 | UI | The game-over screen labelled the *final* belief ratio "Peak Belief", reporting ~0.2% for a run whose belief actually peaked at 73% | **fixed** — the engine now tracks `peak_belief` across the whole run |
-| Export | PNG figures are never generated — `generate_matplotlib_figures()` is defined but called from nowhere | open |
-| Export | Filenames use second granularity, so pressing `E` twice within one second silently overwrites the first dataset | open |
-| Custom data | The CSV path is unreachable — `data/regions_example.csv` and `data/strain_config_example.csv` do not exist and were never committed | open |
+| Export | PNG figures are never generated — `generate_matplotlib_figures()` is defined but called from nowhere | **fixed** — `export_academic_report()` now calls it and merges the two PNGs into the returned file list. Verified: an export produces 5 files, the two figures share the run name of the CSV they plot |
+| Export | Filenames use second granularity, so pressing `E` twice within one second silently overwrites the first dataset | **fixed** — the run name is suffixed until it is free. Verified: two exports in the same second produce 10 distinct files |
+| Custom data | The CSV path is unreachable — `data/regions_example.csv` and `data/strain_config_example.csv` do not exist and were never committed | **fixed** — both files are committed (6 regions; one named custom strain). Verified: `4` selects the custom data, the game runs on it with zero loader warnings, no region is left isolated, and a full game was played to a win at tick 36 with panel hit-testing working |
 | UI layout | The Advance Simulation button rendered off the bottom of the window at the default 1440×900, and was entirely invisible at 1024×768 fullscreen — mouse-advancing turns was impossible | **fixed** |
 | UI input | Panel click handlers were not bounded by their panel rectangle — clicking the trait panel's header fired Sensationalist Blitz, and clicking the news feed's header bought a trait | **fixed** |
 | UI state | A window resize or fullscreen toggle rebuilt every panel, clearing the news ticker and closing the analytics modal | **fixed** |

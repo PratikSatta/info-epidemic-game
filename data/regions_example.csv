@@ -1,0 +1,7 @@
+name,population,base_resistance,x,y,connects_to,edge_weights
+Capital,5200,0.11,300,190,Northern;Eastern;Southern;Western,0.85;0.7;0.75;0.6
+Northern,2100,0.05,290,60,Capital;Eastern;Western,0.85;0.4;0.45
+Eastern,3400,0.07,500,200,Capital;Northern;Coastal,0.7;0.4;0.65
+Southern,2800,0.04,310,330,Capital;Coastal;Western,0.75;0.55;0.5
+Western,1600,0.03,110,190,Capital;Northern;Southern,0.6;0.45;0.5
+Coastal,1900,0.06,480,320,Eastern;Southern,0.65;0.55

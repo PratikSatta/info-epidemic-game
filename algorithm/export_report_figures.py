@@ -27,10 +27,34 @@ from datetime import datetime
 from model.world_graph import LOSS_MINDSHARE
 
 
+def _unique_run_name(output_path: Path, strain_name: str,
+                     model_name: str) -> str:
+    """A run name that no export already in `output_path` is using.
+
+    The timestamp alone has second granularity, and the documented way to
+    export is to press `E` -- twice in quick succession is entirely normal, so
+    two exports inside the same second used to collide and the second silently
+    overwrote the first dataset. Measured: three files after two exports, where
+    six were expected.
+
+    The suffix is only added when the plain name is already taken, so the
+    ordinary case still reads as `Unverified_Rumor_SIR_20260929_143012`.
+    """
+    base = (f"{strain_name.replace(' ', '_')}_{model_name}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    name = base
+    suffix = 2
+    while any(output_path.glob(f"{name}_*")):
+        name = f"{base}_{suffix}"
+        suffix += 1
+    return name
+
+
 def export_academic_report(telemetry_history: list[dict],
                           strain_name: str,
                           model_name: str,
-                          output_dir: str = "report_exports") -> dict:
+                          output_dir: str = "report_exports",
+                          with_figures: bool = True) -> dict:
     """
     Export complete academic report package from telemetry history.
 
@@ -39,6 +63,11 @@ def export_academic_report(telemetry_history: list[dict],
         strain_name: Name of the misinformation strain simulated
         model_name: Epidemic model used (SIR or SEIR)
         output_dir: Directory to save exports (created if missing)
+        with_figures: Also render the PNG figures, sharing this export's run
+            name so the figures and the CSV they were plotted from are
+            obviously a matching pair. Degrades to "no figures" if matplotlib
+            is not installed -- the CSV/JSON/summary export is unaffected, and
+            the reason is reported in `figures_error`.
 
     Returns:
         dict with paths to generated files and export summary
@@ -50,8 +79,7 @@ def export_academic_report(telemetry_history: list[dict],
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name = f"{strain_name.replace(' ', '_')}_{model_name}_{timestamp}"
+    run_name = _unique_run_name(output_path, strain_name, model_name)
 
     result = {
         "success": True,
@@ -76,6 +104,17 @@ def export_academic_report(telemetry_history: list[dict],
     json_path = output_path / f"{run_name}_telemetry.json"
     _export_json(telemetry_history, strain_name, model_name, json_path)
     result["files"]["json"] = str(json_path.absolute())
+
+    # Figures last, reusing this export's run name so the plots and the CSV
+    # they were drawn from share a prefix and are obviously one dataset.
+    if with_figures:
+        figures = generate_matplotlib_figures(
+            telemetry_history, strain_name, model_name,
+            output_dir=output_dir, run_name=run_name)
+        if figures.get("success"):
+            result["files"].update(figures["figures"])
+        else:
+            result["figures_error"] = figures.get("message")
 
     return result
 
@@ -267,10 +306,15 @@ def _export_summary(history: list[dict], strain_name: str, model_name: str, outp
 def generate_matplotlib_figures(telemetry_history: list[dict],
                                 strain_name: str,
                                 model_name: str,
-                                output_dir: str = "report_exports") -> dict:
+                                output_dir: str = "report_exports",
+                                run_name: str | None = None) -> dict:
     """
     Generate high-resolution PNG figures using matplotlib (if available).
     Falls back to basic export if matplotlib is not installed.
+
+    `run_name` is normally supplied by export_academic_report() so the figures
+    and the CSV they were plotted from share a prefix. Called on its own it
+    derives its own unique name, so two standalone calls cannot collide.
 
     Returns dict with figure paths or installation instructions.
     """
@@ -278,7 +322,6 @@ def generate_matplotlib_figures(telemetry_history: list[dict],
         import matplotlib
         matplotlib.use('Agg')  # Non-interactive backend
         import matplotlib.pyplot as plt
-        import numpy as np
     except ImportError:
         return {
             "success": False,
@@ -289,8 +332,8 @@ def generate_matplotlib_figures(telemetry_history: list[dict],
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name = f"{strain_name.replace(' ', '_')}_{model_name}_{timestamp}"
+    if run_name is None:
+        run_name = _unique_run_name(output_path, strain_name, model_name)
 
     result = {"success": True, "figures": {}}
 

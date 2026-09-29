@@ -1,0 +1,6 @@
+parameter,value
+name,Example Custom Strain
+transmission_rate,0.18
+believability_rate,0.22
+incubation_rate,0.35
+resistance_to_correction,0.12

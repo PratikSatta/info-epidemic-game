@@ -575,6 +575,12 @@ class App:
         if result["success"]:
             self.news_ticker.push(f"[EXPORT] Academic report exported to {result['output_dir']}")
             self.news_ticker.push(f"[EXPORT] {len(result['files'])} files generated")
+            if "figures_error" in result:
+                # The data export succeeded and only the plots are missing, so
+                # this is a notice rather than a failure -- but say why, instead
+                # of leaving the player wondering where the figures the
+                # documentation mentions went.
+                self.news_ticker.push(f"[EXPORT] No figures: {result['figures_error']}")
         else:
             self.news_ticker.push(f"[EXPORT] {result['message']}")
 
