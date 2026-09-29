@@ -1,0 +1,14 @@
+# InfoSpread Simulator - runtime dependencies
+# Python 3.14+  (developed and tested against 3.14.4)
+
+pygame-ce>=2.5.7
+numpy>=2.5.1
+
+# Renders the PNG figures in the exported report package. Optional: without it
+# the CSV/JSON/summary export is unaffected and the game says why the figures
+# are missing instead of failing.
+matplotlib>=3.10
+
+# Only needed to regenerate the map data under data/geo/ from raw GeoJSON.
+# Not imported at runtime by the game itself.
+shapely>=2.1.2

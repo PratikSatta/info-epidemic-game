@@ -131,6 +131,32 @@ def main():
     total_points = sum(len(d["outline"]) for d in output["districts"].values())
     print(f"Wrote {len(output['districts'])} districts ({total_points} total points) to {out_path}")
 
+    # --- Province centroids (also needed by the game: geo_data.load_nepal_province_centroids) ---
+    # Computed by averaging each district's outline centroid per province, all in
+    # the same 0-1 normalized space as the district outlines above.  Using the
+    # outline-point average (not the Shapely centroid of the raw polygon) keeps
+    # this dependency-free at generation time and accurate enough for label
+    # placement at the game's stylization level.
+    province_points: dict[str, list] = {}
+    for district_name, info in output["districts"].items():
+        prov = info["province"]
+        pts = info["outline"]
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        province_points.setdefault(prov, []).append((cx, cy))
+
+    centroids = {}
+    for prov, pts in province_points.items():
+        centroids[prov] = [
+            round(sum(p[0] for p in pts) / len(pts), 4),
+            round(sum(p[1] for p in pts) / len(pts), 4),
+        ]
+
+    centroid_path = here / "nepal_province_centroids.json"
+    with open(centroid_path, "w") as f:
+        json.dump(centroids, f, indent=2)
+    print(f"Wrote {len(centroids)} province centroids to {centroid_path}")
+
 
 if __name__ == "__main__":
     main()

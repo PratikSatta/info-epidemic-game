@@ -12,7 +12,8 @@ class Trait(ABC):
     apply_effect(), since apply_effect() adds a delta rather than setting
     an absolute value. This gives the player an ongoing lever against the
     CounterMeasure's continuous growth instead of a one-time fixed boost
-    that becomes irrelevant once the countermeasure catches up
+    that becomes irrelevant once the countermeasure catches up -- see
+    Section 10 of the project guide for the balance reasoning.
     """
 
     def __init__(self, name: str, cost: int, description: str = ""):

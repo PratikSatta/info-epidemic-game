@@ -1,8 +1,8 @@
-
 from model.trait import Trait
+from model.effect import EffectHost
 
 
-class InfoStrain:
+class InfoStrain(EffectHost):
     # Synergy bonus to edge_weight_bonus awarded each time the player crosses
     # a new distinct-trait-type threshold. Keys are the number of distinct trait
     # types owned; value is the bonus applied at that crossing. Rewards spreading
@@ -35,6 +35,7 @@ class InfoStrain:
         self.points_available: int = min(5, points_cap)         # "DNA points" equivalent
         self.acquired_traits: list[Trait] = []                 # full history, in acquisition order (kept for back-compat/UI)
         self.trait_levels: dict[str, int] = {}                  # trait class name -> level count
+        self._init_effects()                                    # temporary ability modifiers (see model/effect.py)
 
     # ---- Encapsulated properties with validation ----
     @property
@@ -60,6 +61,21 @@ class InfoStrain:
     @incubation_rate.setter
     def incubation_rate(self, value: float) -> None:
         self._incubation_rate = max(0.0, min(1.0, value))
+
+    # ---- Effective rates: permanent value + active temporary ability modifiers ----
+    # The spread model and telemetry read THESE. The plain properties above stay
+    # permanent and are what the trait UI reports, because the setters above are
+    # the trait mutation path: if the getter folded in a temporary bonus, then
+    # buying a trait mid-ability would permanently bake that bonus into the base
+    # value -- which is precisely how Bot Amplification Surge used to become
+    # permanent.
+    @property
+    def effective_transmission_rate(self) -> float:
+        return max(0.0, min(1.0, self._transmission_rate + self.temp_delta("transmission_rate")))
+
+    @property
+    def effective_believability_rate(self) -> float:
+        return max(0.0, min(1.0, self._believability_rate + self.temp_delta("believability_rate")))
 
     # ---- Trait management ----
     def acquire_trait(self, trait: Trait) -> bool:

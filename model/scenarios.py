@@ -39,6 +39,7 @@ def earthquake_rumor_scenario() -> InfoStrain:
         "Earthquake Rumor (2015-style)",
         base_transmission_rate=min(1.0, TRUE_INFO_BASELINE_TRANSMISSION * MISINFO_SPEED_MULTIPLIER),
         base_believability_rate=min(1.0, TRUE_INFO_BASELINE_BELIEVABILITY * MISINFO_SPEED_MULTIPLIER),
+        points_cap=50  # Increased from default 8 to support tactical abilities
     )
     # Disaster-context rumors tend to resist correction longer because
     # official channels are themselves disrupted immediately after a
@@ -51,7 +52,7 @@ def earthquake_rumor_scenario() -> InfoStrain:
 
 def default_unverified_rumor() -> InfoStrain:
     """The original, non-calibrated default used when no scenario is selected."""
-    return InfoStrain("Unverified Rumor")
+    return InfoStrain("Unverified Rumor", points_cap=50)  # Increased from default 8
 
 
 SCENARIOS = {
