@@ -279,7 +279,7 @@ PNG figure export is **not implemented** — see Known gaps.
 ## Verification status
 
 **The test suite is a single script, not a framework.** `tests/verify_simulation.py`
-runs 60 checks against the real engine and the real pygame app (headless) and
+runs 88 checks against the real engine and the real pygame app (headless) and
 exits non-zero if any fail:
 
 ```
@@ -294,10 +294,12 @@ actually execute — it asserts on real simulation runs, not on mocks.
 
 One check currently fails, and it is the already-documented missing example
 CSVs (see Known gaps): an exit code of 1 with that as the only failure is the
-expected state of this repository, not a regression. The four warnings are the
-other documented gaps (PNG figures never generated, same-second export
-overwrite, country centroids outside their outlines, and RSF modifiers lost to
-the clamp).
+expected state of this repository, not a regression. The warnings are the other
+documented gaps (PNG figures never generated, same-second export overwrite,
+country centroids outside their outlines, and RSF modifiers lost to the clamp),
+plus one each for the five window sizes too short to give every panel its full
+content height — 1366×768, 1024×768, 1000×600, 800×500 and 640×480 (a report,
+not a fault: see the panel sizing note below).
 
 What has actually been verified, by executing the program:
 
@@ -327,13 +329,33 @@ What has actually been verified, by executing the program:
   was confirmed rather than assumed
 - `report_exports/` receives a correct CSV and JSON; peak and final statistics
   cross-check against the CSV
-- The right-hand column fits inside the window at 1440×900, 1024×768, 1000×600,
-  1920×1080, 800×500 and 640×480, with no panel overlapping another and the
-  advance button on screen and clickable at every one of those sizes
+- The right-hand column fits inside the window at 1920×1080, 1440×900, 1366×768,
+  1024×768, 1000×600, 800×500 and 640×480, with no panel overlapping another and
+  the advance button on screen and clickable at every one of those sizes
+- **No panel paints outside its own box**, at any of those sizes. This is
+  measured rather than asserted: a recording surface applies each panel's clip
+  and reports where its blits actually land, so a panel that overflows its
+  rectangle fails the check instead of reaching the screen. The earlier version
+  of this check compared panel rectangles against the window and each other and
+  therefore could not see content spilling out of a panel — which is why the
+  Territory Telemetry panel drew two of its five lines over the panel below it
+  at every window size under 1080p without any test failing
+- At 1920×1080 and 1440×900 the three telemetry panels receive their full
+  content height and render every line; at 1366×768 and below the window is
+  genuinely too short for the layout and each panel loses its lowest-priority
+  content (see Known gaps)
 - Panel clicks land only inside the panel they belong to; clicks on a panel
   header no longer reach the cards of the panel above it
 - Scrolled cards are clipped at the header edge (checked by sampling pixels)
 - The analytics overlay cannot consume a click while it is not drawn
+- Every character the interface uses is actually drawable, checked by rendering
+  each one and comparing it against the font's missing-glyph bitmap. The
+  character set is read out of the view layer's source rather than listed in
+  the test, so a new icon added to any label is covered automatically. This is
+  the only check that can catch a missing glyph: a tofu box is a perfectly
+  successful render call that raises nothing. Confirmed to have teeth by
+  disabling font fallback, which reproduces the original defect exactly — 34 of
+  37 characters unrenderable
 
 ---
 
@@ -366,9 +388,14 @@ were addressed in the audit-fix pass and are recorded here only for the record.
 | UI state | The analytics modal's `visible` flag was not reset between games, so after Play Again an invisible overlay swallowed clicks across most of the screen | **fixed** |
 | UI input | Map zoom buttons were computed once from a placeholder rect, so they were drawn over the race bar while their hitboxes stayed live at the wrong coordinates | **fixed** |
 | UI layout | Scrollable panels did not clip their content — cards scrolled past the top painted over the fixed header | **fixed** |
+| UI font | Nearly every icon in the game rendered as a tofu box, including the analytics modal's close button. SDL_ttf renders a string with exactly one face and performs no font fallback, and the icons (📍 territory, 🛡️ defence, ⏱ turns, ✕ close, 📊 analytics) live in Segoe UI Symbol / Segoe UI Emoji, not in Segoe UI. Measured: **34 of the 38** distinct non-ASCII characters in the view layer's string literals were unrenderable in the face the app actually used | **fixed** — `view/fonts.py` composites runs of text from whichever installed face has the glyph, the way a browser does. Plain ASCII still takes the untouched pygame path | 
+| UI font | Emoji were then drawn from Segoe UI Symbol, which has them only as thin monochrome outlines — at 15px its bar chart and world map are indistinguishable from empty rectangles, so the Analytics button *looked* like it still had a box on it | **fixed** — Emoji is preferred, with Symbol used for the Arrows block (Emoji draws ↕ as a loud filled blue button, wrong for a scroll hint) and as the fallback of last resort for codepoints Emoji lacks |
+| UI layout | The Territory Telemetry panel drew out of its own box at **every** window size, including the default 1440×900. Its height was allocated as a percentage of the window, but its content is a fixed number of pixels, so the two only agreed at one size. Measured, the panel needs 162px when the selected region has an Exposed compartment and 142px otherwise, against boxes of 122px at 1440×900, 100px at 1366×768 and 55px at 640×480 — its last two lines (Skeptical, Media Literacy) were painted over the panel beneath it. The stats panel overflowed too below 1440×900 and the news feed below 1024×768 | **fixed** — each panel declares `required_height()` from the same constants its `draw()` uses, the layout sizes them from that, and every panel clips to its own rect | 
+| UI layout | Sizing the telemetry panels correctly starved the panels the player interacts with — the first attempt reserved the full telemetry height unconditionally and left the abilities panel 83px at 1366×768, with 39px of clickable area | **fixed** — when the window cannot hold every panel's requirement (a 768px-tall window is 74px short) the shortfall is shared proportionally instead of being dumped on the scrollable panels |
+| UI layout | A panel given less than its content height had no degradation policy: it either overflowed or, once clipped, was cut off mid-line | **fixed** — the telemetry panels drop their lowest-priority lines and keep display order, with Believing and Skeptical (the two numbers the win and loss conditions read) dropped last; the news feed stops before a message it cannot fit |
 | World map | Country populations are schematic (~250–500k each), so geography carries little population signal; platform nodes are 0.011% of the total and their mechanic is invisible | open |
 | World map | The RSF transmission modifier is clamped to a ceiling of 1.0, so per-country penalties survive but boosts are unrepresentable | open |
-| World map | For 55 of 202 countries the centroid falls outside the country's own outline, so its label and strike effects draw in the wrong place | open |
+| World map | For 15 of 202 countries the centroid falls outside the country's own outline, so its label and strike effects draw in the wrong place | open |
 | Repo | No `.gitignore` existed and 24 compiled `.pyc` files were tracked | **fixed** |
 | Repo | The documented launch command crashed with `ModuleNotFoundError` | **fixed** |
 | Repo | No dependency manifest, so a fresh clone could not reproduce the environment | **fixed** |
@@ -392,6 +419,7 @@ were addressed in the audit-fix pass and are recorded here only for the record.
 
 ```
 view/          main.py (App, event loop, layout)  theme.py  ui_panels.py
+               fonts.py (per-character font fallback)
                geo_map_view.py  map_view.py  analytics_modal.py
                tactical_abilities_panel.py  scrollable_panel_base.py
 controller/    game_engine.py (tick, telemetry, abilities)

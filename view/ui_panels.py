@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import pygame
 from view import theme
 from model.trait import Trait
@@ -7,6 +9,26 @@ from view.scrollable_panel_base import ScrollablePanel
 def _lerp(c1, c2, t: float):
     t = max(0.0, min(1.0, t))
     return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
+
+
+@contextmanager
+def clip_to(surface: pygame.Surface, rect: pygame.Rect):
+    """Draw inside `rect` only, restoring the previous clip on exit.
+
+    Panels are laid out in a shared column, so anything a panel draws past its
+    own bottom edge lands on the panel beneath it. Clipping makes the box the
+    panel was given the final authority on what it may draw, which is what lets
+    the layout squeeze a panel below its content height without corrupting its
+    neighbours. _rebuild_layout has always claimed its panels "degrade
+    gracefully instead of overflowing"; before this only the two ScrollablePanel
+    subclasses actually did.
+    """
+    previous = surface.get_clip()
+    surface.set_clip(rect)
+    try:
+        yield
+    finally:
+        surface.set_clip(previous)
 
 
 class TraitButton:
@@ -95,62 +117,88 @@ class TraitButton:
 class StatsPanel:
     """Tactical overview panel displaying global progress metrics."""
 
+    # Layout constants, shared by draw() and required_height() so the height the
+    # layout reserves and the height this panel actually paints cannot drift
+    # apart -- which is how the panel came to overflow its box at every window
+    # size below 1080p.
+    PAD_TOP = 12
+    HEADER_STEP = 32
+    ROW_STEP = 24
+    FOOTER_STEP = 22
+    PAD_BOTTOM = 4
+
     def __init__(self, rect: pygame.Rect, font: pygame.font.Font, header_font: pygame.font.Font):
         self.rect = rect
         self.font = font
         self.header_font = header_font
 
+    @classmethod
+    def required_height(cls, font: pygame.font.Font, has_exposed: bool = True) -> int:
+        """Height this panel needs to draw every line it can draw.
+
+        Assumes the exposed footer is present, because whether it appears
+        depends on the live simulation (SEIR only) and a panel sized for the
+        SIR case would overflow the moment the model changed. Measured, not
+        derived: 88px without the footer, 110px with, at FONT_SIZE_BODY=15.
+        """
+        return (cls.PAD_TOP + cls.HEADER_STEP + cls.ROW_STEP
+                + (cls.FOOTER_STEP if has_exposed else 0)
+                + font.get_linesize() + cls.PAD_BOTTOM)
+
     def draw(self, surface: pygame.Surface, summary: dict, strain_name: str, model_name: str = "") -> None:
         pygame.draw.rect(surface, theme.PANEL_BG, self.rect, border_radius=12)
         pygame.draw.rect(surface, theme.PANEL_BORDER, self.rect, width=1, border_radius=12)
 
-        # Header with badge
-        x, y = self.rect.x + 16, self.rect.y + 12
-        header_text = strain_name.upper()
-        header = self.header_font.render(header_text, True, theme.ACCENT)
-        surface.blit(header, (x, y))
+        has_exposed = summary.get("total_exposed", 0) > 0
 
-        if model_name:
-            model_badge = self.font.render(f"[{model_name}]", True, theme.TEXT_SECONDARY)
-            surface.blit(model_badge, (self.rect.right - model_badge.get_width() - 16, y + 2))
+        with clip_to(surface, self.rect):
+            # Header with badge
+            x, y = self.rect.x + 16, self.rect.y + self.PAD_TOP
+            header_text = strain_name.upper()
+            header = self.header_font.render(header_text, True, theme.ACCENT)
+            surface.blit(header, (x, y))
 
-        # Metrics Grid (2 columns)
-        y += 32
-        col1_x = self.rect.x + 16
-        col2_x = self.rect.x + self.rect.width // 2 + 8
+            if model_name:
+                model_badge = self.font.render(f"[{model_name}]", True, theme.TEXT_SECONDARY)
+                surface.blit(model_badge, (self.rect.right - model_badge.get_width() - 16, y + 2))
 
-        inf_pct = summary["global_infection_ratio"] * 100
-        inf_color = theme.COLOR_BELIEF if inf_pct > 30 else theme.ACCENT
+            # Metrics Grid (2 columns)
+            y += self.HEADER_STEP
+            col1_x = self.rect.x + 16
+            col2_x = self.rect.x + self.rect.width // 2 + 8
 
-        row1 = [
-            ("⏱ Turns:", f"{summary['ticks']}", theme.TEXT_PRIMARY),
-            ("🔴 Belief:", f"{inf_pct:.1f}%", inf_color),
-        ]
-        row2 = [
-            ("👥 Believing:", f"{summary['total_believing']:,}", theme.TEXT_PRIMARY),
-            ("🛡️ Skeptical:", f"{summary['total_skeptical']:,}", theme.COLOR_CURE),
-        ]
+            inf_pct = summary["global_infection_ratio"] * 100
+            inf_color = theme.COLOR_BELIEF if inf_pct > 30 else theme.ACCENT
 
-        for i, (label, val, col) in enumerate(row1):
-            cx = col1_x if i == 0 else col2_x
-            l_surf = self.font.render(label, True, theme.TEXT_MUTED)
-            v_surf = self.font.render(val, True, col)
-            surface.blit(l_surf, (cx, y))
-            surface.blit(v_surf, (cx + l_surf.get_width() + 6, y))
+            row1 = [
+                ("⏱ Turns:", f"{summary['ticks']}", theme.TEXT_PRIMARY),
+                ("🔴 Belief:", f"{inf_pct:.1f}%", inf_color),
+            ]
+            row2 = [
+                ("👥 Believing:", f"{summary['total_believing']:,}", theme.TEXT_PRIMARY),
+                ("🛡️ Skeptical:", f"{summary['total_skeptical']:,}", theme.COLOR_CURE),
+            ]
 
-        y += 24
-        for i, (label, val, col) in enumerate(row2):
-            cx = col1_x if i == 0 else col2_x
-            l_surf = self.font.render(label, True, theme.TEXT_MUTED)
-            v_surf = self.font.render(val, True, col)
-            surface.blit(l_surf, (cx, y))
-            surface.blit(v_surf, (cx + l_surf.get_width() + 6, y))
+            for i, (label, val, col) in enumerate(row1):
+                cx = col1_x if i == 0 else col2_x
+                l_surf = self.font.render(label, True, theme.TEXT_MUTED)
+                v_surf = self.font.render(val, True, col)
+                surface.blit(l_surf, (cx, y))
+                surface.blit(v_surf, (cx + l_surf.get_width() + 6, y))
 
-        # Mini status footer if exposed exists
-        if summary.get("total_exposed", 0) > 0:
-            y += 22
-            exp_surf = self.font.render(f"🟣 Latent / Exposed: {summary['total_exposed']:,}", True, theme.COLOR_EXPOSED)
-            surface.blit(exp_surf, (col1_x, y))
+            y += self.ROW_STEP
+            for i, (label, val, col) in enumerate(row2):
+                cx = col1_x if i == 0 else col2_x
+                l_surf = self.font.render(label, True, theme.TEXT_MUTED)
+                v_surf = self.font.render(val, True, col)
+                surface.blit(l_surf, (cx, y))
+                surface.blit(v_surf, (cx + l_surf.get_width() + 6, y))
+
+            # Mini status footer if exposed exists
+            if has_exposed:
+                y += self.FOOTER_STEP
+                exp_surf = self.font.render(f"🟣 Latent / Exposed: {summary['total_exposed']:,}", True, theme.COLOR_EXPOSED)
+                surface.blit(exp_surf, (col1_x, y))
 
 
 class TraitPanel(ScrollablePanel):
@@ -262,11 +310,29 @@ class NewsTicker:
         "[DATA]": theme.ACCENT,
     }
 
+    PAD_TOP = 10
+    TITLE_STEP = 22
+    ITEM_STEP = 18
+    PAD_BOTTOM = 4
+
     def __init__(self, rect: pygame.Rect, font: pygame.font.Font, max_items: int = 5):
         self.rect = rect
         self.font = font
         self.max_items = max_items
         self.events: list[str] = []
+
+    @classmethod
+    def required_height(cls, font: pygame.font.Font, max_items: int = 5) -> int:
+        """Height needed for a full backlog.
+
+        Sized for max_items rather than for however many events happen to be
+        queued, because push() is monotonic: the feed fills to its cap within a
+        few turns and stays there, so a panel sized for an empty feed overflows
+        for the rest of the game. Measured: 26px empty, 120px at 5 items, with
+        FONT_SIZE_SMALL=12.
+        """
+        return (cls.PAD_TOP + cls.TITLE_STEP + (max_items - 1) * cls.ITEM_STEP
+                + font.get_linesize() + cls.PAD_BOTTOM)
 
     def push(self, message: str) -> None:
         self.events.insert(0, message)
@@ -276,22 +342,31 @@ class NewsTicker:
         pygame.draw.rect(surface, theme.PANEL_BG, self.rect, border_radius=12)
         pygame.draw.rect(surface, theme.PANEL_BORDER, self.rect, width=1, border_radius=12)
 
-        # Title
-        hdr_surf = self.font.render("LIVE INTELLIGENCE FEED", True, theme.TEXT_MUTED)
-        surface.blit(hdr_surf, (self.rect.x + 16, self.rect.y + 10))
+        with clip_to(surface, self.rect):
+            # Title
+            hdr_surf = self.font.render("LIVE INTELLIGENCE FEED", True, theme.TEXT_MUTED)
+            surface.blit(hdr_surf, (self.rect.x + 16, self.rect.y + self.PAD_TOP))
 
-        y = self.rect.y + 32
-        for i, event in enumerate(self.events):
-            # Format color by tag
-            color = theme.TEXT_PRIMARY if i == 0 else theme.TEXT_SECONDARY
-            for tag, tag_col in self.TAG_COLORS.items():
-                if event.upper().startswith(tag):
-                    color = tag_col
+            y = self.rect.y + self.PAD_TOP + self.TITLE_STEP
+            for i, event in enumerate(self.events):
+                # Only the messages that fit are drawn. Without this check the
+                # feed kept painting past its own bottom edge and over the
+                # advance button; clipping alone would cut the last message in
+                # half, which reads as a rendering glitch rather than as a feed
+                # that is full.
+                if y + self.font.get_linesize() > self.rect.bottom - self.PAD_BOTTOM:
                     break
 
-            text_surf = self.font.render(event, True, color)
-            surface.blit(text_surf, (self.rect.x + 16, y))
-            y += 18
+                # Format color by tag
+                color = theme.TEXT_PRIMARY if i == 0 else theme.TEXT_SECONDARY
+                for tag, tag_col in self.TAG_COLORS.items():
+                    if event.upper().startswith(tag):
+                        color = tag_col
+                        break
+
+                text_surf = self.font.render(event, True, color)
+                surface.blit(text_surf, (self.rect.x + 16, y))
+                y += self.ITEM_STEP
 
 
 class RaceBar:
@@ -389,58 +464,112 @@ class AdvanceButton:
 class RegionDetailPanel:
     """Detailed telemetry for selected territory or platform."""
 
+    PAD_TOP = 12
+    HEADER_STEP = 30
+    BAR_STEP = 16
+    LINE_STEP = 20
+    HINT_STEP = 36
+    PAD_BOTTOM = 4
+
+    # Drop priorities for the telemetry lines. The layout cannot always give
+    # this panel what it asks for -- five panels plus the map, the race bar and
+    # the strike strip do not fit in a 768px window -- so when the box is short
+    # the least important lines are dropped rather than the bottom of the panel
+    # being sliced off. BELIEVING and SKEPTICAL are rank 0 because they are the
+    # two numbers the win and loss conditions are evaluated against, so they are
+    # the last to go; Media Literacy is flavour and goes first.
+    KEEP_CORE = 0
+    KEEP_CONTEXT = 1
+    KEEP_EXTRA = 2
+
     def __init__(self, rect: pygame.Rect, font: pygame.font.Font, header_font: pygame.font.Font):
         self.rect = rect
         self.font = font
         self.header_font = header_font
 
+    @classmethod
+    def required_height(cls, font: pygame.font.Font, has_exposed: bool = True) -> int:
+        """Height this panel needs to draw every line it can draw.
+
+        Sized for the SEIR case (five lines, +20px) because `exposed` is a
+        property of whichever region is selected, and selection changes at
+        runtime without rebuilding the layout. Measured: 138px with four lines,
+        158px with five, at FONT_SIZE_BODY=15.
+        """
+        lines = 5 if has_exposed else 4
+        return (cls.PAD_TOP + cls.HEADER_STEP + cls.BAR_STEP
+                + lines * cls.LINE_STEP + cls.PAD_BOTTOM)
+
+    def _fitted_lines(self, entries: list[tuple[str, int]]) -> list[str]:
+        """Choose which telemetry lines fit, dropping by priority if they don't.
+
+        `entries` is in display order; each carries a KEEP_* rank. When the box
+        cannot hold them all, the highest-ranked few are kept and then restored
+        to display order, so a squeezed panel shows a subset of the normal panel
+        rather than a different-looking one.
+        """
+        y = self.rect.y + self.PAD_TOP + self.HEADER_STEP + self.BAR_STEP
+        budget = self.rect.bottom - self.PAD_BOTTOM - y
+        max_lines = max(0, budget // self.LINE_STEP)
+
+        if max_lines >= len(entries):
+            return [line for line, _ in entries]
+
+        by_rank = sorted(range(len(entries)), key=lambda i: (entries[i][1], i))
+        keep = sorted(by_rank[:max_lines])
+        return [entries[i][0] for i in keep]
+
     def draw(self, surface: pygame.Surface, region) -> None:
         pygame.draw.rect(surface, theme.PANEL_BG, self.rect, border_radius=12)
         pygame.draw.rect(surface, theme.PANEL_BORDER, self.rect, width=1, border_radius=12)
 
-        x, y = self.rect.x + 16, self.rect.y + 12
+        x, y = self.rect.x + 16, self.rect.y + self.PAD_TOP
 
         if region is None:
-            hint_title = self.header_font.render("TERRITORY TELEMETRY", True, theme.TEXT_MUTED)
-            hint_sub = self.font.render("Click any region or platform node to inspect.", True, theme.TEXT_SECONDARY)
-            surface.blit(hint_title, (x, y))
-            surface.blit(hint_sub, (x, y + 36))
+            with clip_to(surface, self.rect):
+                hint_title = self.header_font.render("TERRITORY TELEMETRY", True, theme.TEXT_MUTED)
+                hint_sub = self.font.render("Click any region or platform node to inspect.", True, theme.TEXT_SECONDARY)
+                surface.blit(hint_title, (x, y))
+                surface.blit(hint_sub, (x, y + self.HINT_STEP))
             return
 
-        is_platform = getattr(region, "node_type", "geographic") == "platform"
-        icon = "📱" if is_platform else "📍"
-        header = self.header_font.render(f"{icon} {region.name}", True, theme.ACCENT)
-        surface.blit(header, (x, y))
-        y += 30
-
+        # Entries are in display order today (Population, Latent Exposed,
+        # Believing, Skeptical, Media Literacy) with a rank attached; only the
+        # ranks decide what is dropped, never the order.
+        entries = [(f"Population: {region.population:,}", self.KEEP_CONTEXT)]
+        if region.exposed > 0:
+            entries.append((f"Latent Exposed: {region.exposed:,}", self.KEEP_EXTRA))
         believing_pct = region.infection_ratio() * 100
         skeptical_pct = (region.skeptical / region.population * 100) if region.population else 0
-
-        # Mini distribution bar
-        bar_w = self.rect.width - 32
-        bar_h = 8
-        pygame.draw.rect(surface, (30, 38, 52), (x, y, bar_w, bar_h), border_radius=4)
-        b_w = int(bar_w * (region.believing / max(1, region.population)))
-        s_w = int(bar_w * (region.skeptical / max(1, region.population)))
-        if b_w > 0:
-            pygame.draw.rect(surface, theme.COLOR_BELIEF, (x, y, b_w, bar_h), border_radius=4)
-        if s_w > 0:
-            pygame.draw.rect(surface, theme.COLOR_CURE, (x + bar_w - s_w, y, s_w, bar_h), border_radius=4)
-        y += 16
-
-        lines = [
-            f"Population: {region.population:,}",
-            f"Believing: {region.believing:,} ({believing_pct:.1f}%)",
-            f"Skeptical: {region.skeptical:,} ({skeptical_pct:.1f}%)",
-            f"Media Literacy: {region.base_resistance:.2f}",
+        entries += [
+            (f"Believing: {region.believing:,} ({believing_pct:.1f}%)", self.KEEP_CORE),
+            (f"Skeptical: {region.skeptical:,} ({skeptical_pct:.1f}%)", self.KEEP_CORE),
+            (f"Media Literacy: {region.base_resistance:.2f}", self.KEEP_EXTRA),
         ]
-        if region.exposed > 0:
-            lines.insert(2, f"Latent Exposed: {region.exposed:,}")
 
-        for line in lines:
-            text_surf = self.font.render(line, True, theme.TEXT_PRIMARY)
-            surface.blit(text_surf, (x, y))
-            y += 20
+        with clip_to(surface, self.rect):
+            is_platform = getattr(region, "node_type", "geographic") == "platform"
+            icon = "📱" if is_platform else "📍"
+            header = self.header_font.render(f"{icon} {region.name}", True, theme.ACCENT)
+            surface.blit(header, (x, y))
+            y += self.HEADER_STEP
+
+            # Mini distribution bar
+            bar_w = self.rect.width - 32
+            bar_h = 8
+            pygame.draw.rect(surface, (30, 38, 52), (x, y, bar_w, bar_h), border_radius=4)
+            b_w = int(bar_w * (region.believing / max(1, region.population)))
+            s_w = int(bar_w * (region.skeptical / max(1, region.population)))
+            if b_w > 0:
+                pygame.draw.rect(surface, theme.COLOR_BELIEF, (x, y, b_w, bar_h), border_radius=4)
+            if s_w > 0:
+                pygame.draw.rect(surface, theme.COLOR_CURE, (x + bar_w - s_w, y, s_w, bar_h), border_radius=4)
+            y += self.BAR_STEP
+
+            for line in self._fitted_lines(entries):
+                text_surf = self.font.render(line, True, theme.TEXT_PRIMARY)
+                surface.blit(text_surf, (x, y))
+                y += self.LINE_STEP
 
 
 class StrikeWarningPanel:

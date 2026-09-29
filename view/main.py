@@ -25,6 +25,7 @@ from algorithm.counter_ai import GreedyCounterAI
 from controller.game_engine import GameEngine, GameState
 
 from view import theme
+from view.fonts import load_font
 from view.geo_map_view import GeoMapView
 from view.map_view import MapView
 from view.ui_panels import (
@@ -93,10 +94,13 @@ class App:
         self.fullscreen = False
         self.clock = pygame.time.Clock()
 
-        self.font_title = pygame.font.SysFont(theme.FONT_NAME, theme.FONT_SIZE_TITLE, bold=True)
-        self.font_header = pygame.font.SysFont(theme.FONT_NAME, theme.FONT_SIZE_HEADER, bold=True)
-        self.font_body = pygame.font.SysFont(theme.FONT_NAME, theme.FONT_SIZE_BODY)
-        self.font_small = pygame.font.SysFont(theme.FONT_NAME, theme.FONT_SIZE_SMALL)
+        # load_font, not SysFont: the labels carry symbol and emoji glyphs the
+        # primary face does not have, and SDL_ttf does no fallback of its own,
+        # so a plain SysFont draws every one of them as a box. See view/fonts.py.
+        self.font_title = load_font(theme.FONT_NAME, theme.FONT_SIZE_TITLE, bold=True)
+        self.font_header = load_font(theme.FONT_NAME, theme.FONT_SIZE_HEADER, bold=True)
+        self.font_body = load_font(theme.FONT_NAME, theme.FONT_SIZE_BODY)
+        self.font_small = load_font(theme.FONT_NAME, theme.FONT_SIZE_SMALL)
 
         self.state = STATE_MENU
         self.selected_model_name = "SIR"
@@ -172,22 +176,74 @@ class App:
         # Vertical space available to the five panels above the button.
         avail = h - margin * 2 - gap * 5 - advance_h
 
-        # (name, intended proportion of window height, absolute floor)
-        specs = [
-            ("stats",     0.12,  72),
-            ("detail",    0.14,  82),
+        # The three telemetry panels have a FIXED content height: their text is
+        # a table of lines that does not reflow, so the space they need is a
+        # hard requirement rather than a preference. The abilities grid and the
+        # trait catalogue scroll, so those two are the ones that give.
+        #
+        # Reserving the fixed panels first is what stops the content spilling.
+        # Previously every panel was sized as a percentage of the window and
+        # then all five were shrunk together, which left the detail panel 122px
+        # at 1440x900 against the 158px it draws -- so its last two lines were
+        # painted over the panel beneath it at every size below 1080p, and at
+        # 640x480 it was 103px short.
+        reserved = {
+            "stats":  StatsPanel.required_height(self.font_body),
+            "detail": RegionDetailPanel.required_height(self.font_body),
+            "news":   NewsTicker.required_height(self.font_small),
+        }
+
+        # (name, share of any surplus, minimum usable height)
+        flexible = [
             ("abilities", 0.20, 120),
             ("trait",     0.22, 130),
-            ("news",      0.12,  62),
         ]
-        heights = {name: max(floor, int(h * pct)) for name, pct, floor in specs}
 
+        # Every panel's requirement: the telemetry panels exactly what they
+        # draw, the two scrollable ones at least their floor.
+        need = dict(reserved)
+        need.update({name: floor for name, _, floor in flexible})
+        need_total = sum(need.values())
+
+        if avail >= need_total:
+            # Everything fits. The surplus goes to the two scrollable panels in
+            # their intended proportions, because they are the ones that improve
+            # with more room -- an ability card or a trait that fits is one the
+            # player can actually use. The telemetry panels stay at their
+            # requirement: their content is a fixed table, so extra height would
+            # be blank space.
+            surplus = avail - need_total
+            weight = sum(pct for _, pct, _ in flexible)
+            heights = dict(need)
+            handed_out = 0
+            for name, pct, _ in flexible[:-1]:
+                share = int(surplus * pct / weight)
+                heights[name] += share
+                handed_out += share
+            heights[flexible[-1][0]] += surplus - handed_out
+        else:
+            # Not enough room for every panel at its requirement -- a 768px-tall
+            # window is already 46px short. Scale every requirement by the same
+            # factor so the shortfall is shared, rather than dumping it on
+            # whichever panels happen to be reserved last.
+            #
+            # Reserving the telemetry panels first and letting the scrollable
+            # ones absorb the whole squeeze was tried and rejected: at 1366x768
+            # (a very common laptop) it starved the abilities panel to 83px,
+            # leaving 39px of clickable area, so the fix for missing telemetry
+            # broke the panel the player actually plays the game with.
+            #
+            # Nothing escapes its box either way: every panel clips to its own
+            # rect and the telemetry panels drop their lowest-priority lines, so
+            # a squeezed window loses content everywhere instead of the whole of
+            # one panel.
+            factor = avail / need_total
+            heights = {name: max(1, int(value * factor)) for name, value in need.items()}
+
+        # Safety net: int() truncation can leave the total a pixel or two over
+        # the budget, which would push the advance button off the bottom.
         total = sum(heights.values())
         if total > avail > 0:
-            # Shrink every panel by the same factor rather than letting the last
-            # one fall off the bottom. Floored at 1px so no panel vanishes
-            # outright; the grid and news panels scroll, so a short panel
-            # degrades gracefully instead of overflowing.
             factor = avail / total
             heights = {name: max(1, int(value * factor)) for name, value in heights.items()}
 

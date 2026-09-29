@@ -21,11 +21,14 @@ assert on real simulation runs, not on mocks, and the output is a readable
 report rather than a dot stream.
 """
 import csv
+import glob
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
+import unicodedata
 
 # Repo root is this file's grandparent directory. Derived rather than
 # hardcoded so the script runs from any working directory, on any machine --
@@ -83,6 +86,7 @@ for _m in MODULES:
 check(f"all {len(MODULES)} modules import", not failed, "; ".join(failed) or "clean")
 
 from view.main import build_world, build_global_world, App
+from view.ui_panels import StatsPanel, RegionDetailPanel, NewsTicker
 from model.scenarios import default_unverified_rumor, earthquake_rumor_scenario
 from model.countermeasure import CounterMeasure
 from algorithm.spread_model import SIRSpreadModel, SEIRSpreadModel
@@ -292,9 +296,130 @@ app = App()
 check("App constructs headless", True,
       f"{len(app.world.regions)} regions, map={app.selected_map_name}")
 
-SIZES = [(1440, 900), (1920, 1080), (1024, 768), (1000, 600), (800, 500), (640, 480)]
+# --- every glyph the UI asks for must actually be drawable ----------------
+#
+# SDL_ttf performs no font fallback: a character the face does not have is
+# painted as a tofu box, silently and without raising. The UI labels itself
+# with emoji -- a pushpin on the territory header, a shield on the defence
+# bar, a multiplication X on the modal's close button -- and none of those
+# live in the primary face, so before view/fonts.py existed every one of them
+# was a box, including the close button. Measured at the time: 34 of the 38
+# distinct non-ASCII characters in the view layer's string literals.
+#
+# This is the only check that can see that failure, because a box is a
+# perfectly successful render call. Any new icon added to a label is covered
+# automatically: the character set is read out of the source, not listed here.
+_icons = set()
+for _path in glob.glob(os.path.join(REPO, "view", "*.py")):
+    # fonts.py is excluded because it deliberately renders a character no face
+    # has, to capture each face's missing-glyph bitmap.
+    if os.path.basename(_path) == "fonts.py":
+        continue
+    with open(_path, encoding="utf-8") as _fh:
+        for _lit in re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', _fh.read()):
+            for _text in _lit:
+                _icons.update(
+                    c for c in _text
+                    if ord(c) > 127
+                    # Private use: no standard glyph exists by definition.
+                    and not 0xE000 <= ord(c) <= 0xF8FF
+                    # Non-spacing marks and format characters have no glyph of
+                    # their own -- U+FE0F is the variation selector that
+                    # follows most emoji and only modifies the character
+                    # before it, so it is not an icon and cannot be "missing".
+                    and unicodedata.category(c) not in ("Mn", "Cf"))
+
+_app_fonts = {"body": app.font_body, "header": app.font_header,
+              "small": app.font_small, "title": app.font_title}
+check("app fonts load with fallback faces available",
+      all(f._fallbacks for f in _app_fonts.values()),
+      f"{[len(f._fallbacks) for f in _app_fonts.values()]} fallback faces per font")
+tofu = [f"U+{ord(c):04X} {unicodedata.name(c, '?')} in {label}"
+        for label, font in _app_fonts.items()
+        for c in sorted(_icons) if not font.has_glyph(c)]
+check(f"all {len(_icons)} icon characters the UI uses are drawable",
+      not tofu, "; ".join(tofu))
+
+# The close button specifically, because it is the one icon that is the only
+# visible affordance for its control: if ✕ renders as a box, the modal has no
+# readable way out.
+check("close button glyph renders", app.font_header.has_glyph("✕"),
+      "U+2715 MULTIPLICATION X")
+
+# 1366x768 is the most common laptop resolution and the one the layout rework
+# was tuned against, so it is checked rather than assumed.
+SIZES = [(1440, 900), (1920, 1080), (1366, 768), (1024, 768), (1000, 600),
+         (800, 500), (640, 480)]
 PANELS = ["race_bar", "strike_panel", "stats_panel", "detail_panel",
           "abilities_panel", "trait_panel", "news_ticker", "advance_button"]
+
+
+class Spy(pygame.Surface):
+    """Surface that records where blits actually LAND, honouring the clip.
+
+    Applying the surface clip before recording is the whole point: it makes the
+    recorded boxes the pixels that really reach the screen. A panel that draws
+    without clipping to its own rect therefore shows up here as an escape.
+    """
+
+    def __init__(self, size):
+        super().__init__(size)
+        self.boxes = []
+
+    def blit(self, src, dest, *args, **kwargs):
+        r = dest if isinstance(dest, pygame.Rect) else pygame.Rect(dest, src.get_size())
+        landed = r.clip(self.get_clip())
+        if landed.width > 0 and landed.height > 0:
+            self.boxes.append(landed)
+        return super().blit(src, dest, *args, **kwargs)
+
+
+class _FakeRegion:
+    """A region with the fields RegionDetailPanel reads, so the layout checks
+    below can exercise the five-line SEIR case without mutating the live world."""
+
+    def __init__(self, exposed):
+        self.name, self.node_type = "Madhesh", "geographic"
+        self.population, self.believing = 6_000_000, 1_200_000
+        self.skeptical, self.exposed = 300_000, exposed
+        self.base_resistance = 0.35
+
+    def infection_ratio(self):
+        return self.believing / self.population
+
+
+def painted_bounds(draw_fn) -> pygame.Rect | None:
+    """Union of everything `draw_fn` actually paints, or None if it paints nothing."""
+    spy = Spy(app.screen.get_size())
+    draw_fn(spy)
+    if not spy.boxes:
+        return None
+    bounds = spy.boxes[0].copy()
+    for box in spy.boxes[1:]:
+        bounds.union_ip(box)
+    return bounds
+
+
+# The content-height requirement each telemetry panel declares, and a draw call
+# that exercises its full-height case (SEIR, exposed > 0, a full news backlog).
+STATS_SUMMARY = {"global_infection_ratio": 0.42, "ticks": 37, "total_believing": 1_200_000,
+                 "total_skeptical": 300_000, "total_exposed": 400_000}
+TELEMETRY = {
+    "stats_panel": (StatsPanel.required_height(app.font_body),
+                    lambda s: app.stats_panel.draw(s, STATS_SUMMARY, "Nepal SIR", "SEIR")),
+    "detail_panel": (RegionDetailPanel.required_height(app.font_body),
+                     lambda s: app.detail_panel.draw(s, _FakeRegion(346))),
+    "news_ticker": (NewsTicker.required_height(app.font_small),
+                    lambda s: _draw_full_news(s)),
+}
+
+
+def _draw_full_news(surface):
+    for i in range(5):
+        app.news_ticker.push(f"[DATA] Event {i} in a region")
+    app.news_ticker.draw(surface)
+
+
 for size in SIZES:
     app.screen = pygame.display.set_mode(size, pygame.RESIZABLE)
     app._rebuild_layout()
@@ -317,6 +442,71 @@ for size in SIZES:
                 over.append(f"{rects[i][0]}/{rects[j][0]}")
     check(f"{w}x{h}: panels inside the window", not outside, str(outside))
     check(f"{w}x{h}: no panel overlaps another", not over, str(over))
+
+    # The two checks above compare panel RECTANGLES against the window and each
+    # other, which is why they never caught the defect that was actually on
+    # screen: the detail panel was 122px tall at 1440x900 while painting 158px
+    # of telemetry, so its last two lines were drawn over the panel beneath it
+    # at every size below 1080p. Nothing compared a panel's content to its own
+    # box. These do -- see Spy and painted_bounds above.
+    escapes, drops = [], []
+    for pname, (needs, draw_it) in TELEMETRY.items():
+        panel = getattr(app, pname)
+        bounds = painted_bounds(draw_it)
+        # No panel may paint outside its own rect, at any size. This is what
+        # clip_to guarantees; if it is ever removed, or a new panel forgets it,
+        # the overflow reappears and this fails instead of reaching the screen.
+        if bounds is not None and not panel.rect.contains(bounds):
+            escapes.append(f"{pname} paints {tuple(bounds)} outside {tuple(panel.rect)}")
+        # A panel given less than it declares must have dropped lines rather
+        # than be silently cut off mid-line, so record what was lost.
+        if panel.rect.height < needs:
+            drops.append(f"{pname} {panel.rect.height}<{needs}")
+    check(f"{w}x{h}: no panel paints outside its box", not escapes, "; ".join(escapes))
+
+    # Where the layout has room, the panels must get their full declared height.
+    # The signal that it does not is the two scrollable panels being squeezed
+    # below their own floors, which is the intended failure mode on a window too
+    # small for the layout as a whole.
+    layout_squeezed = (app.abilities_panel.rect.height < 120
+                       or app.trait_panel.rect.height < 130)
+    if not layout_squeezed:
+        check(f"{w}x{h}: telemetry panels get their full content height",
+              not drops, "; ".join(drops))
+    elif drops:
+        warn(f"{w}x{h}: window too small for full telemetry",
+             f"dropped content: {', '.join(drops)}")
+
+# A squeezed detail panel must drop its least important lines rather than have
+# its bottom sliced off, and must never drop the two numbers that decide the
+# game. Exercised directly on the fitting helper so the expectation is stated
+# once, independent of whatever window sizes happen to be tested above.
+# Heights are derived from the panel's own constants rather than written as
+# literal pixel counts, so this cannot drift when the layout constants change.
+_FULL = RegionDetailPanel.required_height(app.font_body)
+_STEP = RegionDetailPanel.LINE_STEP
+_ENTRIES = [("Population", RegionDetailPanel.KEEP_CONTEXT),
+            ("Latent Exposed", RegionDetailPanel.KEEP_EXTRA),
+            ("Believing", RegionDetailPanel.KEEP_CORE),
+            ("Skeptical", RegionDetailPanel.KEEP_CORE),
+            ("Media Literacy", RegionDetailPanel.KEEP_EXTRA)]
+_kept = {lines: RegionDetailPanel(pygame.Rect(0, 0, 320, _FULL - n * _STEP),
+                                  app.font_body, app.font_header)._fitted_lines(_ENTRIES)
+         for n, lines in ((0, 5), (1, 4), (2, 3), (3, 2), (4, 1))}
+check("detail panel: full box keeps every line",
+      _kept[5] == ["Population", "Latent Exposed", "Believing", "Skeptical", "Media Literacy"],
+      str(_kept[5]))
+check("detail panel: one line short drops Media Literacy",
+      _kept[4] == ["Population", "Latent Exposed", "Believing", "Skeptical"], str(_kept[4]))
+check("detail panel: squeezed box keeps the decision numbers last",
+      _kept[3] == ["Population", "Believing", "Skeptical"], str(_kept[3]))
+check("detail panel: heavily squeezed box keeps Believing",
+      _kept[1] == ["Believing"], str(_kept[1]))
+check("detail panel: kept lines stay in display order",
+      all(lines == sorted(lines, key=["Population", "Latent Exposed", "Believing",
+                                      "Skeptical", "Media Literacy"].index)
+          for lines in _kept.values()),
+      str(_kept))
 
 # events + a full game in each map mode / model
 for map_name in ("nepal", "world"):
